@@ -52,8 +52,22 @@ router.put('/me', auth, upload.fields([
   try {
     // Support both JSON and FormData
     const body = req.body || {};
-    const { name, email, city, state, address, postal_code, password, isRegistration,
+    const { name, email, city, state, address, postal_code, password, currentPassword, isRegistration,
             shop_name, national_code, phone_fixed, province } = body;
+    // اگر کاربر می‌خواهد رمز عبور را تغییر دهد، ابتدا رمز فعلی را تایید کن
+    if (password && !isRegistration) {
+      if (!currentPassword) {
+        return res.status(400).json({ message: 'رمز عبور فعلی الزامی است' });
+      }
+      const [[existingUser]] = await db.execute('SELECT password FROM users WHERE id=?', [req.user.id]);
+      if (!existingUser || !existingUser.password) {
+        return res.status(400).json({ message: 'خطا در تایید رمز عبور' });
+      }
+      const isValid = await bcrypt.compare(currentPassword, existingUser.password);
+      if (!isValid) {
+        return res.status(400).json({ message: 'رمز عبور فعلی اشتباه است' });
+      }
+    }
 
     const idCardImage = req.files?.id_card_image?.[0]?.filename || null;
     const shopImage   = req.files?.shop_image?.[0]?.filename    || null;
