@@ -21,9 +21,17 @@ const sign = async (user) => {
 // ── POST /api/auth/send-otp ──
 router.post('/send-otp', async (req, res) => {
   try {
-    const { phone } = req.body;
+    const { phone, purpose } = req.body;
     if (!phone || !/^09\d{9}$/.test(phone))
       return res.status(400).json({ message: 'شماره موبایل نامعتبر است' });
+
+    // اگر برای ثبت‌نام است، بررسی کن که این شماره از قبل حساب کاربری کامل نداشته باشد
+    if (purpose === 'register') {
+      const [rows] = await db.execute('SELECT id, name FROM users WHERE phone=?', [phone]);
+      if (rows.length && rows[0].name) {
+        return res.status(400).json({ message: 'شما دارای حساب کاربری در آن‌پارت می‌باشید' });
+      }
+    }
 
     await SMS.sendOTP(phone);
     res.json({ message: 'کد تأیید ارسال شد' });
