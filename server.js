@@ -85,7 +85,7 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/announcements', require('./routes/announcements'));
 app.use('/api/suppliers',     require('./routes/suppliers'));
 app.use('/api/webauthn',      require('./routes/webauthn'));
-
+app.use('/api/cart',          require('./routes/cart'));
 // ── Health check ──
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString(), version: '1.0.0' });
