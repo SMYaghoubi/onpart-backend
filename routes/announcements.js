@@ -2,6 +2,15 @@ const router = require('express').Router();
 const db     = require('../config/database');
 const { adminAuth } = require('../middleware/auth');
 const ALLOWED_TYPES = new Set(['info', 'success', 'warning', 'promo']);
+const streamClients = new Set();
+
+function broadcastChange(action, id) {
+  const payload = `event: announcement\ndata: ${JSON.stringify({ action, id: Number(id) || 0, at: Date.now() })}\n\n`;
+  for (const client of streamClients) {
+    try { client.write(payload); }
+    catch (_) { streamClients.delete(client); }
+  }
+}
 
 function normalizeAnnouncement(body = {}) {
   const title = String(body.title || '').trim();
@@ -33,6 +42,23 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Live announcement stream for storefront clients (Server-Sent Events).
+router.get('/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+  res.write(`event: connected\ndata: ${JSON.stringify({ at: Date.now() })}\n\n`);
+  streamClients.add(res);
+
+  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    streamClients.delete(res);
+  });
+});
+
 // ── GET /api/announcements/admin ── (admin panel - all)
 router.get('/admin', adminAuth, async (req, res) => {
   try {
@@ -55,6 +81,7 @@ router.post('/', adminAuth, async (req, res) => {
       'INSERT INTO announcements (title, body, type, expires_at, created_by) VALUES (?,?,?,?,?)',
       [data.title, data.text, data.type, data.expiresAt, req.user.id]
     );
+    broadcastChange('created', result.insertId);
     res.status(201).json({ id: result.insertId, message: 'اعلان ایجاد شد' });
   } catch (err) {
     console.error('POST announcement failed:', err.message);
@@ -71,6 +98,7 @@ router.put('/:id', adminAuth, async (req, res) => {
       'UPDATE announcements SET title=?, body=?, type=?, expires_at=? WHERE id=?',
       [data.title, data.text, data.type, data.expiresAt, req.params.id]
     );
+    broadcastChange('updated', req.params.id);
     res.json({ message: 'اعلان ویرایش شد' });
   } catch (err) {
     console.error('PUT announcement failed:', err.message);
@@ -85,6 +113,7 @@ router.patch('/:id/toggle', adminAuth, async (req, res) => {
       'UPDATE announcements SET is_active = NOT is_active WHERE id=?',
       [req.params.id]
     );
+    broadcastChange('toggled', req.params.id);
     res.json({ message: 'وضعیت تغییر کرد' });
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
@@ -95,6 +124,7 @@ router.patch('/:id/toggle', adminAuth, async (req, res) => {
 router.delete('/:id', adminAuth, async (req, res) => {
   try {
     await db.execute('DELETE FROM announcements WHERE id=?', [req.params.id]);
+    broadcastChange('deleted', req.params.id);
     res.json({ message: 'اعلان حذف شد' });
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
