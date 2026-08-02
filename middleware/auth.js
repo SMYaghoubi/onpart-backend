@@ -48,4 +48,23 @@ const adminAuth = async (req, res, next) => {
   }
 };
 
-module.exports = { auth, adminAuth, invalidateUserCache };
+const supplierAuth = async (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ message: 'ابتدا وارد پنل تأمین‌کنندگان شوید' });
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded.role !== 'supplier' || !decoded.supplier_id) throw new Error('invalid supplier token');
+    const [[supplier]] = await db.execute(
+      'SELECT id,company,name,mobile,status,portal_enabled FROM suppliers WHERE id=?',
+      [decoded.supplier_id]
+    );
+    if (!supplier || supplier.status !== 'approved' || !supplier.portal_enabled)
+      return res.status(403).json({ message: 'دسترسی پنل تأمین‌کننده فعال نیست' });
+    req.supplier = supplier;
+    next();
+  } catch (err) {
+    res.status(401).json({ message: 'نشست تأمین‌کننده نامعتبر است' });
+  }
+};
+
+module.exports = { auth, adminAuth, supplierAuth, invalidateUserCache };

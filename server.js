@@ -55,6 +55,7 @@ app.use(limiter);
 app.use('/api/auth/send-otp', authLimiter);
 app.use('/api/auth/verify-otp', authLimiter);
 app.use('/api/auth/login', authLimiter);
+app.use('/api/supplier-portal/auth', authLimiter);
 
 // Security headers
 app.use((req, res, next) => {
@@ -83,7 +84,9 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/credit',   require('./routes/credit'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/announcements', require('./routes/announcements'));
+app.use('/api/user-notifications', require('./routes/userNotifications'));
 app.use('/api/suppliers',     require('./routes/suppliers'));
+app.use('/api/supplier-portal', require('./routes/supplierPortal'));
 app.use('/api/webauthn',      require('./routes/webauthn'));
 app.use('/api/cart',          require('./routes/cart'));
 // ── Health check ──
