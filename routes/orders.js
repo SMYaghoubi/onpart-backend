@@ -4,8 +4,10 @@ const SMS    = require('../config/sms');
 const { auth, adminAuth } = require('../middleware/auth');
 const { createNotif } = require('../config/notif');
 const { createUserNotification } = require('../lib/userNotifications');
+const { syncUserDebt } = require('../lib/orderDebt');
 
 const userStatusNotifications = {
+  pending_expert: ['درخواست در انتظار بررسی است', 'درخواست شما برای بررسی کارشناس ثبت شده است.', 'info'],
   pending_customer: ['درخواست شما تأیید شد', 'لطفاً در قسمت سوابق سفارشات، سفارش خود را بررسی و تأیید یا رد کنید.', 'info'],
   pending_payment: ['درخواست توسط شما تأیید شد', 'لطفاً بعد از تکمیل وجه، فیش واریزی خود را از منوی ثبت فیش واریزی تکمیل و ارسال نمایید.', 'info'],
   preparing: ['درخواست شما در حال تأمین است', 'پس از تأمین و جمع‌آوری، سفارش برای شما ارسال می‌شود.', 'success'],
@@ -286,39 +288,59 @@ router.patch('/:id/ship', adminAuth, async (req, res) => {
 
 // ── PATCH /api/orders/:id/status ── (admin)
 router.patch('/:id/status', adminAuth, async (req, res) => {
+  const conn = await db.getConnection();
   try {
     const { status, clear_shipping } = req.body;
     const validStatuses = ['pending_expert','pending_customer','pending_payment','preparing','shipping','delivered','cancelled'];
     if (!validStatuses.includes(status)) return res.status(400).json({ message: 'وضعیت نامعتبر' });
 
-    if(clear_shipping){
-      await db.execute(
-        `UPDATE orders SET status=?, shipping_method=NULL, shipping_tracking=NULL, shipping_driver_name=NULL, shipping_driver_phone=NULL, shipping_vehicle=NULL, shipping_plate=NULL, shipping_packages=NULL, delivery_code=NULL WHERE id=?`,
-        [status, req.params.id]
-      );
-    } else {
-      await db.execute('UPDATE orders SET status=? WHERE id=?', [status, req.params.id]);
+    await conn.beginTransaction();
+    const [[order]] = await conn.execute(
+      `SELECT o.*,u.phone,u.name FROM orders o
+       JOIN users u ON o.user_id=u.id WHERE o.id=? FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!order) {
+      await conn.rollback();
+      return res.status(404).json({ message: 'سفارش یافت نشد' });
     }
 
-    // Send SMS to user for every status change
-    const [[order]] = await db.execute('SELECT o.*,u.phone,u.name FROM orders o JOIN users u ON o.user_id=u.id WHERE o.id=?', [req.params.id]);
-    if (order) {
+    let debtRemaining = Math.max(0, Number(order.debt_remaining) || 0);
+    if (status === 'pending_payment' && order.status !== 'pending_payment' && debtRemaining === 0) {
+      debtRemaining = Math.max(0, Number(order.total) || 0);
+    } else if (['pending_expert','pending_customer','cancelled'].includes(status)) {
+      debtRemaining = 0;
+    }
+
+    if(clear_shipping){
+      await conn.execute(
+        `UPDATE orders SET status=?,debt_remaining=?,shipping_method=NULL,shipping_tracking=NULL,
+         shipping_driver_name=NULL,shipping_driver_phone=NULL,shipping_vehicle=NULL,
+         shipping_plate=NULL,shipping_packages=NULL,delivery_code=NULL WHERE id=?`,
+        [status, debtRemaining, req.params.id]
+      );
+    } else {
+      await conn.execute('UPDATE orders SET status=?,debt_remaining=? WHERE id=?', [status, debtRemaining, req.params.id]);
+    }
+    const debt = await syncUserDebt(conn, order.user_id);
+    await conn.commit();
+
+    try {
       const name = order.name || 'کاربر';
       const id = req.params.id;
       if (status === 'preparing') await SMS.orderPreparing(order.phone, name, id);
-      else if (status === 'cancelled') {
-        await SMS.orderRejected(order.phone, name, id);
-        // Remove debt if order had been approved (debt was added)
-        await db.execute('UPDATE users SET debt=GREATEST(0, debt-?) WHERE id=?', [order.total||0, order.user_id]);
-      }
+      else if (status === 'cancelled') await SMS.orderRejected(order.phone, name, id);
       else if (status === 'pending_payment') await SMS.orderApproved(order.phone, name, id);
-      await notifyOrderStatus(order, status);
+    } catch (smsError) {
+      console.error('Order status SMS failed:', smsError.message);
     }
+    await notifyOrderStatus(order, status);
 
-    res.json({ message: 'وضعیت سفارش تغییر کرد' });
+    res.json({ message: 'وضعیت سفارش و بدهی مشتری به‌روزرسانی شد', status, debt });
   } catch (err) {
+    try { await conn.rollback(); } catch (_) {}
     res.status(500).json({ message: 'خطای سرور' });
-  }
+  } finally { conn.release(); }
 });
 
 // ── DELETE /api/orders/:id ── (admin) - fully remove order and related data
@@ -326,12 +348,27 @@ router.delete('/:id', adminAuth, async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    const [[order]] = await conn.execute(
+      'SELECT id,user_id,total,debt_remaining FROM orders WHERE id=? FOR UPDATE',
+      [req.params.id]
+    );
+    if (!order) {
+      await conn.rollback();
+      return res.status(404).json({ message: 'سفارش یافت نشد' });
+    }
     await conn.execute('DELETE FROM order_items WHERE order_id=?', [req.params.id]);
     await conn.execute('DELETE FROM invoices WHERE order_id=?', [req.params.id]).catch(()=>{});
-    const [result] = await conn.execute('DELETE FROM orders WHERE id=?', [req.params.id]);
+    await conn.execute('DELETE FROM orders WHERE id=?', [req.params.id]);
+    const debt = await syncUserDebt(conn, order.user_id);
     await conn.commit();
-    if (!result.affectedRows) return res.status(404).json({ message: 'سفارش یافت نشد' });
-    res.json({ message: 'سفارش حذف شد' });
+    await createUserNotification(
+      order.user_id,
+      'سفارش حذف شد',
+      `سفارش #${order.id} حذف شد و بدهی مرتبط با آن نیز اصلاح شد.`,
+      'warning',
+      '/orders.html'
+    );
+    res.json({ message: 'سفارش حذف شد و بدهی مشتری اصلاح شد', debt });
   } catch (err) {
     await conn.rollback();
     console.error('Delete order error:', err.message);
@@ -382,24 +419,39 @@ router.put('/:id/items', adminAuth, async (req, res) => {
 
 // ── PATCH /api/orders/:id/customer-approve ── (customer confirms invoice)
 router.patch('/:id/customer-approve', auth, async (req, res) => {
+  const conn = await db.getConnection();
   try {
-    const [[order]] = await db.execute('SELECT * FROM orders WHERE id=? AND user_id=?', [req.params.id, req.user.id]);
-    if (!order) return res.status(404).json({ message: 'سفارش یافت نشد' });
-    if (order.status !== 'pending_customer') return res.status(400).json({ message: 'این سفارش در وضعیت قابل تایید نیست' });
-
-    await db.execute('UPDATE orders SET status="pending_payment" WHERE id=?', [req.params.id]);
-
-    // Add order total to user's debt (only for regular users)
-    const [[user]] = await db.execute('SELECT role FROM users WHERE id=?', [order.user_id]);
-    if(user && user.role === 'user'){
-      await db.execute('UPDATE users SET debt=debt+? WHERE id=?', [order.total||0, order.user_id]);
+    await conn.beginTransaction();
+    const [[order]] = await conn.execute(
+      'SELECT * FROM orders WHERE id=? AND user_id=? FOR UPDATE',
+      [req.params.id, req.user.id]
+    );
+    if (!order) {
+      await conn.rollback();
+      return res.status(404).json({ message: 'سفارش یافت نشد' });
     }
+    if (order.status !== 'pending_customer') {
+      await conn.rollback();
+      return res.status(400).json({ message: 'این سفارش در وضعیت قابل تایید نیست' });
+    }
+
+    await conn.execute(
+      'UPDATE orders SET status="pending_payment",debt_remaining=total WHERE id=?',
+      [req.params.id]
+    );
+
+    const [[user]] = await conn.execute('SELECT role FROM users WHERE id=?', [order.user_id]);
+    if(user && user.role === 'user'){
+      await syncUserDebt(conn, order.user_id);
+    }
+    await conn.commit();
     await notifyOrderStatus(order, 'pending_payment');
 
     res.json({ message: 'فاکتور تایید شد', status: 'pending_payment' });
   } catch (err) {
+    try { await conn.rollback(); } catch (_) {}
     res.status(500).json({ message: 'خطای سرور' });
-  }
+  } finally { conn.release(); }
 });
 
 // ── PATCH /api/orders/:id/customer-reject ── (customer rejects invoice)

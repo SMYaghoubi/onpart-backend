@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS orders (
   id          INT AUTO_INCREMENT PRIMARY KEY,
   user_id     INT NOT NULL,
   total       BIGINT NOT NULL DEFAULT 0,
+  debt_remaining BIGINT NOT NULL DEFAULT 0,
   discount_percent INT DEFAULT 0,
   status      ENUM('pending_expert','pending_customer','pending_payment','preparing','shipping','delivered','cancelled') DEFAULT 'pending_expert',
   note        TEXT,
