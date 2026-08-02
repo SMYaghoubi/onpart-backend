@@ -55,7 +55,7 @@ router.get('/me', supplierAuth, (req, res) => res.json(req.supplier));
 router.get('/products', supplierAuth, async (req, res) => {
   try {
     const [rows] = await db.execute(
-      `SELECT p.id,p.code,p.description,p.car,p.brand,p.category,p.price,p.stock,p.updated_at
+      `SELECT p.id,p.code,p.description,p.car,p.brand,p.category,p.price,p.stock,p.has_flow,p.updated_at
        FROM products p
        WHERE p.status='active' AND (
          (p.supplier_id=? AND EXISTS(
@@ -155,8 +155,14 @@ router.post('/updates', supplierAuth, async (req, res) => {
 // Admin/marketer: list available scope values.
 router.get('/admin/scope-options', adminAuth, async (req, res) => {
   try {
-    const [brands] = await db.execute("SELECT DISTINCT brand FROM products WHERE brand IS NOT NULL AND brand<>'' ORDER BY brand");
-    res.json({ brands: brands.map(row => row.brand) });
+    const [brands] = await db.execute(
+      `SELECT TRIM(brand) brand, COUNT(*) product_count
+       FROM products
+       WHERE status='active' AND brand IS NOT NULL AND TRIM(brand)<>''
+       GROUP BY TRIM(brand)
+       ORDER BY TRIM(brand)`
+    );
+    res.json({ brands });
   } catch (err) { res.status(500).json({ message:'خطای سرور' }); }
 });
 
@@ -173,6 +179,17 @@ router.put('/admin/suppliers/:id/scopes', adminAuth, async (req, res) => {
     if (!validId(req.params.id)) return res.status(400).json({ message:'شناسه نامعتبر است' });
     const brands = [...new Set((Array.isArray(req.body.brands)?req.body.brands:[]).map(v=>String(v).trim()).filter(Boolean))].slice(0,200);
     const assignedCompany = req.body.assigned_company === true;
+    if (brands.length) {
+      const placeholders = brands.map(() => '?').join(',');
+      const [existingBrands] = await conn.execute(
+        `SELECT DISTINCT TRIM(brand) brand FROM products
+         WHERE status='active' AND TRIM(brand) IN (${placeholders})`,
+        brands
+      );
+      const existing = new Set(existingBrands.map(row => row.brand));
+      const invalid = brands.filter(brand => !existing.has(brand));
+      if (invalid.length) return res.status(400).json({ message:`برند نامعتبر است: ${invalid.join('، ')}` });
+    }
     await conn.beginTransaction();
     await conn.execute('DELETE FROM supplier_product_scopes WHERE supplier_id=?', [req.params.id]);
     if (assignedCompany) await conn.execute(

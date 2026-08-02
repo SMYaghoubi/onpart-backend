@@ -6,10 +6,10 @@ const { createNotif } = require('../config/notif');
 const { createUserNotification } = require('../lib/userNotifications');
 
 const userStatusNotifications = {
-  pending_customer: ['سفارش توسط کارشناس بررسی شد', 'فاکتور سفارش شما آماده تأیید است.', 'info'],
-  pending_payment: ['سفارش آماده پرداخت است', 'فاکتور تأیید شد و سفارش در انتظار پرداخت است.', 'info'],
-  preparing: ['سفارش در حال آماده‌سازی است', 'پرداخت تأیید شد و سفارش شما در حال آماده‌سازی است.', 'success'],
-  shipping: ['سفارش ارسال شد', 'مرسوله شما تحویل واحد حمل‌ونقل شد.', 'success'],
+  pending_customer: ['درخواست شما تأیید شد', 'لطفاً در قسمت سوابق سفارشات، سفارش خود را بررسی و تأیید یا رد کنید.', 'info'],
+  pending_payment: ['درخواست توسط شما تأیید شد', 'لطفاً بعد از تکمیل وجه، فیش واریزی خود را از منوی ثبت فیش واریزی تکمیل و ارسال نمایید.', 'info'],
+  preparing: ['درخواست شما در حال تأمین است', 'پس از تأمین و جمع‌آوری، سفارش برای شما ارسال می‌شود.', 'success'],
+  shipping: ['درخواست شما در حال ارسال است', 'برای رهگیری درخواست، به قسمت سفارشات من بروید و اطلاعات مرسوله و وضعیت ارسال را پیگیری نمایید.', 'success'],
   delivered: ['سفارش تحویل شد', 'سفارش شما با موفقیت تحویل داده شد.', 'success'],
   cancelled: ['سفارش لغو شد', 'وضعیت سفارش شما به لغوشده تغییر کرد.', 'warning']
 };
@@ -17,7 +17,7 @@ const userStatusNotifications = {
 async function notifyOrderStatus(order, status) {
   const message = userStatusNotifications[status];
   if (!order || !message) return;
-  await createUserNotification(order.user_id, message[0], `${message[1]} شماره سفارش: #${order.id}`, message[2], '/orders.html');
+  await createUserNotification(order.user_id, message[0], `${message[1]} شماره سفارش: #${order.id}`, message[2], '/orders.html', status);
 }
 
 // ── GET /api/orders ──
@@ -188,7 +188,7 @@ router.post('/', auth, async (req, res) => {
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [req.user.id]);
     await SMS.orderConfirmed(user.phone, user.name || 'کاربر', orderId);
     await createNotif('order', `سفارش جدید #${orderId}`, `${user.name||user.phone} یک سفارش جدید ثبت کرد`, '/admin/orders.html');
-    await createUserNotification(req.user.id, 'سفارش ثبت شد', `سفارش #${orderId} ثبت شد و در انتظار بررسی کارشناس است.`, 'success', '/orders.html');
+    await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست #${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders.html', 'order_submitted');
 
     res.status(201).json({ id: orderId, total, message: 'سفارش ثبت شد' });
   } catch (err) {

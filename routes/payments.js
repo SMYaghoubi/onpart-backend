@@ -94,7 +94,14 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
     // SMS
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [payment.user_id]);
     await SMS.paymentConfirmed(user.phone, user.name || 'کاربر', payment.order_id);
-    await createUserNotification(payment.user_id, 'پرداخت تأیید شد', 'پرداخت شما تأیید شد و سفارش در حال آماده‌سازی است.', 'success', '/orders.html');
+    await createUserNotification(
+      payment.user_id,
+      'درخواست شما در حال تأمین است',
+      'پرداخت تأیید شد؛ پس از تأمین و جمع‌آوری، سفارش برای شما ارسال می‌شود.',
+      'success',
+      '/orders.html',
+      'preparing'
+    );
 
     res.json({ message: 'پرداخت تأیید شد' });
   } catch (err) {
