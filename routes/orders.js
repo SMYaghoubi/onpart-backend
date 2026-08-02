@@ -3,6 +3,22 @@ const db     = require('../config/database');
 const SMS    = require('../config/sms');
 const { auth, adminAuth } = require('../middleware/auth');
 const { createNotif } = require('../config/notif');
+const { createUserNotification } = require('../lib/userNotifications');
+
+const userStatusNotifications = {
+  pending_customer: ['سفارش توسط کارشناس بررسی شد', 'فاکتور سفارش شما آماده تأیید است.', 'info'],
+  pending_payment: ['سفارش آماده پرداخت است', 'فاکتور تأیید شد و سفارش در انتظار پرداخت است.', 'info'],
+  preparing: ['سفارش در حال آماده‌سازی است', 'پرداخت تأیید شد و سفارش شما در حال آماده‌سازی است.', 'success'],
+  shipping: ['سفارش ارسال شد', 'مرسوله شما تحویل واحد حمل‌ونقل شد.', 'success'],
+  delivered: ['سفارش تحویل شد', 'سفارش شما با موفقیت تحویل داده شد.', 'success'],
+  cancelled: ['سفارش لغو شد', 'وضعیت سفارش شما به لغوشده تغییر کرد.', 'warning']
+};
+
+async function notifyOrderStatus(order, status) {
+  const message = userStatusNotifications[status];
+  if (!order || !message) return;
+  await createUserNotification(order.user_id, message[0], `${message[1]} شماره سفارش: #${order.id}`, message[2], '/orders.html');
+}
 
 // ── GET /api/orders ──
 // ── GET /api/orders/my ── (user - with items)
@@ -172,6 +188,7 @@ router.post('/', auth, async (req, res) => {
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [req.user.id]);
     await SMS.orderConfirmed(user.phone, user.name || 'کاربر', orderId);
     await createNotif('order', `سفارش جدید #${orderId}`, `${user.name||user.phone} یک سفارش جدید ثبت کرد`, '/admin/orders.html');
+    await createUserNotification(req.user.id, 'سفارش ثبت شد', `سفارش #${orderId} ثبت شد و در انتظار بررسی کارشناس است.`, 'success', '/orders.html');
 
     res.status(201).json({ id: orderId, total, message: 'سفارش ثبت شد' });
   } catch (err) {
@@ -194,6 +211,7 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
 
     const customerName = order.name || 'کاربر گرامی';
     await SMS.orderApproved(order.phone, order.name || 'کاربر', req.params.id);
+    await notifyOrderStatus(order, 'pending_customer');
 
     res.json({ message: 'سفارش تایید شد', status: 'pending_customer' });
   } catch (err) {
@@ -220,6 +238,7 @@ router.patch('/:id/deliver', adminAuth, async (req, res) => {
 
     await db.execute('UPDATE orders SET status="delivered" WHERE id=?', [req.params.id]);
     await SMS.orderDelivered(order.phone, order.name||'کاربر', delivery_code);
+    await notifyOrderStatus(order, 'delivered');
 
     res.json({ message: 'سفارش تحویل داده شد' });
   } catch(err) {
@@ -255,6 +274,7 @@ router.patch('/:id/ship', adminAuth, async (req, res) => {
       } catch(smsErr){
         console.error('Ship SMS error:', smsErr.message);
       }
+      await notifyOrderStatus(order, 'shipping');
     }
 
     res.json({ message: 'اطلاعات ارسال ثبت شد', delivery_code });
@@ -292,6 +312,7 @@ router.patch('/:id/status', adminAuth, async (req, res) => {
         await db.execute('UPDATE users SET debt=GREATEST(0, debt-?) WHERE id=?', [order.total||0, order.user_id]);
       }
       else if (status === 'pending_payment') await SMS.orderApproved(order.phone, name, id);
+      await notifyOrderStatus(order, status);
     }
 
     res.json({ message: 'وضعیت سفارش تغییر کرد' });
@@ -373,6 +394,7 @@ router.patch('/:id/customer-approve', auth, async (req, res) => {
     if(user && user.role === 'user'){
       await db.execute('UPDATE users SET debt=debt+? WHERE id=?', [order.total||0, order.user_id]);
     }
+    await notifyOrderStatus(order, 'pending_payment');
 
     res.json({ message: 'فاکتور تایید شد', status: 'pending_payment' });
   } catch (err) {
@@ -389,6 +411,7 @@ router.patch('/:id/customer-reject', auth, async (req, res) => {
     if (order.status !== 'pending_customer') return res.status(400).json({ message: 'این سفارش در وضعیت قابل رد نیست' });
 
     await db.execute('UPDATE orders SET status="cancelled" WHERE id=?', [req.params.id]);
+    await notifyOrderStatus(order, 'cancelled');
 
     res.json({ message: 'فاکتور رد شد', status: 'cancelled' });
   } catch (err) {

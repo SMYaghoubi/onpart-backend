@@ -5,6 +5,7 @@ const db     = require('../config/database');
 const SMS    = require('../config/sms');
 const { createNotif } = require('../config/notif');
 const { auth, adminAuth } = require('../middleware/auth');
+const { createUserNotification } = require('../lib/userNotifications');
 
 // File upload setup
 const storage = multer.diskStorage({
@@ -63,6 +64,7 @@ router.post('/receipt', auth, upload.single('file'), async (req, res) => {
     await SMS.paymentSubmitted(user?.phone, user?.name || 'کاربر', order_id);
     await SMS.notifyAdmin('notif_new_payment', `فیش واریز جدید از ${user?.name||user?.phone||'کاربر'} به مبلغ ${Number(amount).toLocaleString()} تومان ثبت شد.`);
     await createNotif('payment', `فیش واریز جدید`, `${user?.name||user?.phone||'کاربر'} فیش واریز به مبلغ ${Number(amount).toLocaleString()} تومان ثبت کرد`, '/admin/payments.html');
+    await createUserNotification(req.user.id, 'فیش پرداخت ثبت شد', 'فیش پرداخت شما ثبت شد و در انتظار بررسی است.', 'info', '/payment.html');
 
     res.status(201).json({ id: result.insertId, message: 'فیش واریز ثبت شد' });
   } catch (err) {
@@ -92,6 +94,7 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
     // SMS
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [payment.user_id]);
     await SMS.paymentConfirmed(user.phone, user.name || 'کاربر', payment.order_id);
+    await createUserNotification(payment.user_id, 'پرداخت تأیید شد', 'پرداخت شما تأیید شد و سفارش در حال آماده‌سازی است.', 'success', '/orders.html');
 
     res.json({ message: 'پرداخت تأیید شد' });
   } catch (err) {
@@ -113,6 +116,7 @@ router.patch('/:id/reject', adminAuth, async (req, res) => {
 
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [payment.user_id]);
     if (user) await SMS.paymentRejected(user.phone, user.name || 'کاربر', payment.order_id);
+    await createUserNotification(payment.user_id, 'پرداخت رد شد', reason || 'پرداخت شما تأیید نشد؛ لطفاً اطلاعات فیش را بررسی کنید.', 'warning', '/payment.html');
 
     res.json({ message: 'پرداخت رد شد' });
   } catch (err) {

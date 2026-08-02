@@ -1,15 +1,11 @@
 const router = require('express').Router();
 const db     = require('../config/database');
 const { adminAuth } = require('../middleware/auth');
+const { addClient, broadcast } = require('../lib/liveEvents');
 const ALLOWED_TYPES = new Set(['info', 'success', 'warning', 'promo']);
-const streamClients = new Set();
 
 function broadcastChange(action, id) {
-  const payload = `event: announcement\ndata: ${JSON.stringify({ action, id: Number(id) || 0, at: Date.now() })}\n\n`;
-  for (const client of streamClients) {
-    try { client.write(payload); }
-    catch (_) { streamClients.delete(client); }
-  }
+  broadcast('announcement', { action, id: Number(id) || 0 });
 }
 
 function normalizeAnnouncement(body = {}) {
@@ -50,13 +46,7 @@ router.get('/stream', (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
   res.write(`event: connected\ndata: ${JSON.stringify({ at: Date.now() })}\n\n`);
-  streamClients.add(res);
-
-  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25000);
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    streamClients.delete(res);
-  });
+  addClient(req, res);
 });
 
 // ── GET /api/announcements/admin ── (admin panel - all)
