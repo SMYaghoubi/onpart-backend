@@ -1,6 +1,19 @@
 const router = require('express').Router();
 const db     = require('../config/database');
 const { adminAuth } = require('../middleware/auth');
+const ALLOWED_TYPES = new Set(['info', 'success', 'warning', 'promo']);
+
+function normalizeAnnouncement(body = {}) {
+  const title = String(body.title || '').trim();
+  const text = String(body.body || '').trim();
+  const type = ALLOWED_TYPES.has(body.type) ? body.type : 'info';
+  const expiresAt = body.expires_at || null;
+  if (!title || !text) return { error: 'عنوان و متن الزامی است' };
+  if (title.length > 180) return { error: 'عنوان اعلان بیش از حد طولانی است' };
+  if (text.length > 5000) return { error: 'متن اعلان بیش از حد طولانی است' };
+  if (expiresAt && Number.isNaN(Date.parse(expiresAt))) return { error: 'تاریخ انقضا نامعتبر است' };
+  return { title, text, type, expiresAt };
+}
 
 // ── GET /api/announcements ── (shop users - active only)
 router.get('/', async (req, res) => {
@@ -15,6 +28,7 @@ router.get('/', async (req, res) => {
     );
     res.json({ announcements: rows });
   } catch (err) {
+    console.error('GET announcements failed:', err.message);
     res.status(500).json({ message: 'خطای سرور' });
   }
 });
@@ -27,6 +41,7 @@ router.get('/admin', adminAuth, async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
+    console.error('GET admin announcements failed:', err.message);
     res.status(500).json({ message: 'خطای سرور' });
   }
 });
@@ -34,16 +49,15 @@ router.get('/admin', adminAuth, async (req, res) => {
 // ── POST /api/announcements ──
 router.post('/', adminAuth, async (req, res) => {
   try {
-    const { title, body, type = 'info', expires_at } = req.body;
-    if (!title?.trim() || !body?.trim()) {
-      return res.status(400).json({ message: 'عنوان و متن الزامی است' });
-    }
+    const data = normalizeAnnouncement(req.body);
+    if (data.error) return res.status(400).json({ message: data.error });
     const [result] = await db.execute(
       'INSERT INTO announcements (title, body, type, expires_at, created_by) VALUES (?,?,?,?,?)',
-      [title.trim(), body.trim(), type, expires_at || null, req.user.id]
+      [data.title, data.text, data.type, data.expiresAt, req.user.id]
     );
     res.status(201).json({ id: result.insertId, message: 'اعلان ایجاد شد' });
   } catch (err) {
+    console.error('POST announcement failed:', err.message);
     res.status(500).json({ message: 'خطای سرور' });
   }
 });
@@ -51,16 +65,15 @@ router.post('/', adminAuth, async (req, res) => {
 // ── PUT /api/announcements/:id ──
 router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const { title, body, type, expires_at } = req.body;
-    if (!title?.trim() || !body?.trim()) {
-      return res.status(400).json({ message: 'عنوان و متن الزامی است' });
-    }
+    const data = normalizeAnnouncement(req.body);
+    if (data.error) return res.status(400).json({ message: data.error });
     await db.execute(
       'UPDATE announcements SET title=?, body=?, type=?, expires_at=? WHERE id=?',
-      [title.trim(), body.trim(), type || 'info', expires_at || null, req.params.id]
+      [data.title, data.text, data.type, data.expiresAt, req.params.id]
     );
     res.json({ message: 'اعلان ویرایش شد' });
   } catch (err) {
+    console.error('PUT announcement failed:', err.message);
     res.status(500).json({ message: 'خطای سرور' });
   }
 });
