@@ -145,6 +145,13 @@ router.post('/manual', adminAuth, async (req, res) => {
     );
     const orderId = orderResult.insertId;
 
+    const [[manualUser]] = await db.execute('SELECT name,phone FROM users WHERE id=?', [finalUserId]);
+    if (manualUser) {
+      try { await SMS.orderConfirmed(manualUser.phone, manualUser.name || 'کاربر', orderId); }
+      catch (smsError) { console.error('Manual order SMS failed:', smsError.message); }
+    }
+    await createUserNotification(finalUserId, 'سفارش جدید برای شما ثبت شد', `سفارش #${orderId} در پنل ثبت شد.`, 'info', '/orders.html', 'order_submitted', 'order', orderId);
+
     res.status(201).json({ id: orderId, message: 'سفارش ثبت شد', user_id: finalUserId });
   } catch (err) {
     console.error('Manual order error:', err.message);
@@ -321,6 +328,7 @@ router.patch('/:id/status', adminAuth, async (req, res) => {
       return res.status(404).json({ message: 'سفارش یافت نشد' });
     }
 
+    const statusChanged = order.status !== status;
     let debtRemaining = Math.max(0, Number(order.debt_remaining) || 0);
     if (status === 'pending_payment' && order.status !== 'pending_payment' && debtRemaining === 0) {
       debtRemaining = Math.max(0, Number(order.total) || 0);
@@ -341,16 +349,20 @@ router.patch('/:id/status', adminAuth, async (req, res) => {
     const debt = await syncUserDebt(conn, order.user_id);
     await conn.commit();
 
-    try {
-      const name = order.name || 'کاربر';
-      const id = req.params.id;
-      if (status === 'preparing') await SMS.orderPreparing(order.phone, name, id);
-      else if (status === 'cancelled') await SMS.orderRejected(order.phone, name, id);
-      else if (status === 'pending_payment') await SMS.orderApproved(order.phone, name, id);
-    } catch (smsError) {
-      console.error('Order status SMS failed:', smsError.message);
+    if (statusChanged) {
+      try {
+        const name = order.name || 'کاربر';
+        const id = req.params.id;
+        if (status === 'pending_expert') await SMS.orderConfirmed(order.phone, name, id);
+        else if (status === 'pending_customer' || status === 'pending_payment') await SMS.orderApproved(order.phone, name, id);
+        else if (status === 'preparing') await SMS.orderPreparing(order.phone, name, id);
+        else if (status === 'cancelled') await SMS.orderRejected(order.phone, name, id);
+        else if (status === 'delivered') await SMS.orderDelivered(order.phone, name, order.delivery_code || id);
+      } catch (smsError) {
+        console.error('Order status SMS failed:', smsError.message);
+      }
+      await notifyOrderStatus(order, status);
     }
-    await notifyOrderStatus(order, status);
 
     res.json({ message: 'وضعیت سفارش و بدهی مشتری به‌روزرسانی شد', status, debt });
   } catch (err) {
@@ -365,7 +377,8 @@ router.delete('/:id', adminAuth, async (req, res) => {
   try {
     await conn.beginTransaction();
     const [[order]] = await conn.execute(
-      'SELECT id,user_id,total,debt_remaining FROM orders WHERE id=? FOR UPDATE',
+      `SELECT o.id,o.user_id,o.total,o.debt_remaining,u.name,u.phone FROM orders o
+       JOIN users u ON o.user_id=u.id WHERE o.id=? FOR UPDATE`,
       [req.params.id]
     );
     if (!order) {
@@ -379,6 +392,12 @@ router.delete('/:id', adminAuth, async (req, res) => {
     const debt = await syncUserDebt(conn, order.user_id);
     await conn.commit();
     broadcastUserNotificationsChanged();
+    try { await SMS.orderRejected(order.phone, order.name || 'کاربر', order.id); }
+    catch (smsError) { console.error('Delete order SMS failed:', smsError.message); }
+    await createUserNotification(
+      order.user_id, 'سفارش حذف شد', `سفارش #${order.id} توسط مدیریت حذف شد.`,
+      'warning', '/orders.html', 'cancelled', null, null
+    );
     res.json({ message: 'سفارش حذف شد و بدهی مشتری اصلاح شد', debt });
   } catch (err) {
     await conn.rollback();
@@ -417,6 +436,17 @@ router.put('/:id/items', adminAuth, async (req, res) => {
 
     await conn.execute('UPDATE orders SET total=?, discount_percent=? WHERE id=?', [finalTotal, overallDiscount, req.params.id]);
     await conn.commit();
+
+    const [[order]] = await db.execute(
+      `SELECT o.id,o.user_id,u.name,u.phone FROM orders o
+       LEFT JOIN users u ON o.user_id=u.id WHERE o.id=?`,
+      [req.params.id]
+    );
+    if (order) {
+      try { await SMS.orderApproved(order.phone, order.name || 'کاربر', order.id); }
+      catch (smsError) { console.error('Invoice update SMS failed:', smsError.message); }
+      await createUserNotification(order.user_id, 'فاکتور شما به‌روزرسانی شد', `مبلغ و اقلام سفارش #${order.id} تغییر کرد؛ لطفاً فاکتور را بررسی کنید.`, 'info', '/orders.html', 'pending_customer', 'order', order.id);
+    }
 
     res.json({ message: 'فاکتور به‌روزرسانی شد', total: finalTotal });
   } catch (err) {

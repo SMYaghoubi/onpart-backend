@@ -12,6 +12,33 @@ router.get('/', auth, async (req, res) => {
     );
     res.json({ notifications: rows });
   } catch (err) {
+    if (err.code === 'ER_BAD_FIELD_ERROR' || err.errno === 1054) {
+      try {
+        let rows;
+        try {
+          [rows] = await db.execute(
+            `SELECT id,title,body,type,link,sound_key,NULL AS entity_type,
+                    NULL AS entity_id,is_read,created_at
+             FROM user_notifications WHERE user_id=?
+             ORDER BY id DESC LIMIT 50`,
+            [req.user.id]
+          );
+        } catch (soundColumnErr) {
+          if (soundColumnErr.code !== 'ER_BAD_FIELD_ERROR' && soundColumnErr.errno !== 1054) throw soundColumnErr;
+          [rows] = await db.execute(
+            `SELECT id,title,body,type,link,NULL AS sound_key,NULL AS entity_type,
+                    NULL AS entity_id,is_read,created_at
+             FROM user_notifications WHERE user_id=?
+             ORDER BY id DESC LIMIT 50`,
+            [req.user.id]
+          );
+        }
+        return res.json({ notifications: rows });
+      } catch (legacyErr) {
+        console.error('GET legacy user notifications failed:', legacyErr.message);
+      }
+    }
+    console.error('GET user notifications failed:', err.message);
     res.status(500).json({ message: 'خطا در دریافت اعلان‌های کاربری' });
   }
 });

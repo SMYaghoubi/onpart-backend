@@ -5,6 +5,7 @@ const SMS    = require('../config/sms');
 const { createNotif } = require('../config/notif');
 const multer = require('multer');
 const path   = require('path');
+const { createUserNotification } = require('../lib/userNotifications');
 
 const uploadPath = process.env.UPLOAD_PATH || './uploads';
 const storage = multer.diskStorage({
@@ -86,6 +87,7 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
 
     const [[user]] = await db.execute('SELECT phone, name FROM users WHERE id=?', [request.user_id]);
     if (user) await SMS.send(user.phone, `درخواست اعتبار شما به مبلغ ${finalAmount.toLocaleString()} تومان تأیید شد. آن‌پارت`);
+    await createUserNotification(request.user_id, 'درخواست اعتبار تأیید شد', `اعتبار شما به مبلغ ${Number(finalAmount).toLocaleString()} تومان افزایش یافت.`, 'success', '/profile.html', null, 'credit', request.id);
 
     res.json({ message: 'درخواست تأیید شد' });
   } catch (err) {
@@ -107,6 +109,7 @@ router.patch('/:id/reject', adminAuth, async (req, res) => {
 
     const [[user]] = await db.execute('SELECT phone FROM users WHERE id=?', [request.user_id]);
     if (user) await SMS.send(user.phone, `متأسفانه درخواست اعتبار شما رد شد. آن‌پارت`);
+    await createUserNotification(request.user_id, 'درخواست اعتبار رد شد', note || 'درخواست اعتبار شما توسط مدیریت تأیید نشد.', 'warning', '/profile.html', null, 'credit', request.id);
 
     res.json({ message: 'درخواست رد شد' });
   } catch (err) {

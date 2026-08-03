@@ -6,6 +6,7 @@ const SMS     = require('../config/sms');
 const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
+const { createUserNotification, broadcastUserDataChanged } = require('../lib/userNotifications');
 
 const uploadPath = process.env.UPLOAD_PATH || './uploads';
 const storage = multer.diskStorage({
@@ -171,6 +172,8 @@ router.put('/:id', adminAuth, async (req, res) => {
         [name||'', email||null, role||'user', status||'active', city||null, address||null, credit_limit||0, req.params.id]
       );
     }
+    invalidateUserCache(Number(req.params.id));
+    broadcastUserDataChanged('profile', 'updated');
     res.json({ message: 'کاربر به‌روزرسانی شد' });
   } catch (err) {
     console.error('PUT user error:', err.message);
@@ -185,6 +188,7 @@ router.patch('/:id/block', adminAuth, async (req, res) => {
     const newStatus = user.status === 'blocked' ? 'active' : 'blocked';
     await db.execute('UPDATE users SET status=? WHERE id=?', [newStatus, req.params.id]);
     invalidateUserCache(Number(req.params.id));
+    broadcastUserDataChanged('profile', newStatus);
     res.json({ message: newStatus === 'blocked' ? 'کاربر مسدود شد' : 'مسدودی رفع شد', status: newStatus });
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
@@ -200,11 +204,20 @@ router.patch('/:id/status', adminAuth, async (req, res) => {
 
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [req.params.id]);
     await db.execute('UPDATE users SET status=? WHERE id=?', [status, req.params.id]);
+    invalidateUserCache(Number(req.params.id));
 
     if (user) {
       if (status === 'active') await SMS.accountApproved(user.phone, user.name || 'کاربر');
       else if (status === 'pending') await SMS.accountPending(user.phone, user.name || 'کاربر');
     }
+    if (user && status === 'active') {
+      await createUserNotification(user.id, 'حساب شما تأیید شد', 'حساب کاربری شما توسط مدیریت فعال شد.', 'success', '/profile.html', null, 'account', user.id);
+    } else if (user && status === 'pending') {
+      await createUserNotification(user.id, 'حساب در انتظار بررسی است', 'وضعیت حساب شما به در انتظار بررسی تغییر کرد.', 'info', '/profile.html', null, 'account', user.id);
+    } else {
+      broadcastUserDataChanged('profile', status);
+    }
+
 
     res.json({ message: 'وضعیت کاربر به‌روزرسانی شد', status });
   } catch (err) {
