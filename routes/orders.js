@@ -3,7 +3,11 @@ const db     = require('../config/database');
 const SMS    = require('../config/sms');
 const { auth, adminAuth } = require('../middleware/auth');
 const { createNotif } = require('../config/notif');
-const { createUserNotification } = require('../lib/userNotifications');
+const {
+  createUserNotification,
+  deleteUserNotificationsForEntity,
+  broadcastUserNotificationsChanged
+} = require('../lib/userNotifications');
 const { syncUserDebt } = require('../lib/orderDebt');
 
 const userStatusNotifications = {
@@ -19,7 +23,16 @@ const userStatusNotifications = {
 async function notifyOrderStatus(order, status) {
   const message = userStatusNotifications[status];
   if (!order || !message) return;
-  await createUserNotification(order.user_id, message[0], `${message[1]} شماره سفارش: #${order.id}`, message[2], '/orders.html', status);
+  await createUserNotification(
+    order.user_id,
+    message[0],
+    `${message[1]} شماره سفارش: #${order.id}`,
+    message[2],
+    '/orders.html',
+    status,
+    'order',
+    order.id
+  );
 }
 
 // ── GET /api/orders ──
@@ -190,7 +203,7 @@ router.post('/', auth, async (req, res) => {
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [req.user.id]);
     await SMS.orderConfirmed(user.phone, user.name || 'کاربر', orderId);
     await createNotif('order', `سفارش جدید #${orderId}`, `${user.name||user.phone} یک سفارش جدید ثبت کرد`, '/admin/orders.html');
-    await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست #${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders.html', 'order_submitted');
+    await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست #${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders.html', 'order_submitted', 'order', orderId);
 
     res.status(201).json({ id: orderId, total, message: 'سفارش ثبت شد' });
   } catch (err) {
@@ -211,8 +224,11 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
 
     // Don't add debt here - wait for customer to approve the invoice
 
-    const customerName = order.name || 'کاربر گرامی';
-    await SMS.orderApproved(order.phone, order.name || 'کاربر', req.params.id);
+    try {
+      await SMS.orderApproved(order.phone, order.name || 'کاربر', req.params.id);
+    } catch (smsError) {
+      console.error('Expert approval SMS failed:', smsError.message);
+    }
     await notifyOrderStatus(order, 'pending_customer');
 
     res.json({ message: 'سفارش تایید شد', status: 'pending_customer' });
@@ -358,16 +374,11 @@ router.delete('/:id', adminAuth, async (req, res) => {
     }
     await conn.execute('DELETE FROM order_items WHERE order_id=?', [req.params.id]);
     await conn.execute('DELETE FROM invoices WHERE order_id=?', [req.params.id]).catch(()=>{});
+    await deleteUserNotificationsForEntity(conn, order.user_id, 'order', order.id, '/orders.html');
     await conn.execute('DELETE FROM orders WHERE id=?', [req.params.id]);
     const debt = await syncUserDebt(conn, order.user_id);
     await conn.commit();
-    await createUserNotification(
-      order.user_id,
-      'سفارش حذف شد',
-      `سفارش #${order.id} حذف شد و بدهی مرتبط با آن نیز اصلاح شد.`,
-      'warning',
-      '/orders.html'
-    );
+    broadcastUserNotificationsChanged();
     res.json({ message: 'سفارش حذف شد و بدهی مشتری اصلاح شد', debt });
   } catch (err) {
     await conn.rollback();

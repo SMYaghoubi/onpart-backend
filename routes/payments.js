@@ -5,7 +5,11 @@ const db     = require('../config/database');
 const SMS    = require('../config/sms');
 const { createNotif } = require('../config/notif');
 const { auth, adminAuth } = require('../middleware/auth');
-const { createUserNotification } = require('../lib/userNotifications');
+const {
+  createUserNotification,
+  deleteUserNotificationsForEntity,
+  broadcastUserNotificationsChanged
+} = require('../lib/userNotifications');
 const { syncUserDebt } = require('../lib/orderDebt');
 
 // File upload setup
@@ -65,7 +69,16 @@ router.post('/receipt', auth, upload.single('file'), async (req, res) => {
     await SMS.paymentSubmitted(user?.phone, user?.name || 'کاربر', order_id);
     await SMS.notifyAdmin('notif_new_payment', `فیش واریز جدید از ${user?.name||user?.phone||'کاربر'} به مبلغ ${Number(amount).toLocaleString()} تومان ثبت شد.`);
     await createNotif('payment', `فیش واریز جدید`, `${user?.name||user?.phone||'کاربر'} فیش واریز به مبلغ ${Number(amount).toLocaleString()} تومان ثبت کرد`, '/admin/payments.html');
-    await createUserNotification(req.user.id, 'فیش پرداخت ثبت شد', 'فیش پرداخت شما ثبت شد و در انتظار بررسی است.', 'info', '/payment.html');
+    await createUserNotification(
+      req.user.id,
+      'فیش پرداخت ثبت شد',
+      `فیش پرداخت #${result.insertId} ثبت شد و در انتظار بررسی است.`,
+      'info',
+      '/payment.html',
+      null,
+      'payment',
+      result.insertId
+    );
 
     res.status(201).json({ id: result.insertId, message: 'فیش واریز ثبت شد' });
   } catch (err) {
@@ -125,7 +138,9 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
       'پرداخت تأیید شد؛ پس از تأمین و جمع‌آوری، سفارش برای شما ارسال می‌شود.',
       'success',
       '/orders.html',
-      'preparing'
+      'preparing',
+      payment.order_id ? 'order' : 'payment',
+      payment.order_id || payment.id
     );
 
     res.json({ message: 'پرداخت تأیید شد و بدهی به‌روزرسانی شد', debt });
@@ -149,7 +164,16 @@ router.patch('/:id/reject', adminAuth, async (req, res) => {
 
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [payment.user_id]);
     if (user) await SMS.paymentRejected(user.phone, user.name || 'کاربر', payment.order_id);
-    await createUserNotification(payment.user_id, 'پرداخت رد شد', reason || 'پرداخت شما تأیید نشد؛ لطفاً اطلاعات فیش را بررسی کنید.', 'warning', '/payment.html');
+    await createUserNotification(
+      payment.user_id,
+      'پرداخت رد شد',
+      reason || `فیش پرداخت #${payment.id} تأیید نشد؛ لطفاً اطلاعات فیش را بررسی کنید.`,
+      'warning',
+      '/payment.html',
+      null,
+      'payment',
+      payment.id
+    );
 
     res.json({ message: 'پرداخت رد شد' });
   } catch (err) {
@@ -159,13 +183,23 @@ router.patch('/:id/reject', adminAuth, async (req, res) => {
 
 // ── DELETE /api/payments/:id ── (admin)
 router.delete('/:id', adminAuth, async (req, res) => {
+  const conn = await db.getConnection();
   try {
-    const [result] = await db.execute('DELETE FROM payments WHERE id=?', [req.params.id]);
-    if (!result.affectedRows) return res.status(404).json({ message: 'پرداخت یافت نشد' });
-    res.json({ message: 'پرداخت حذف شد' });
+    await conn.beginTransaction();
+    const [[payment]] = await conn.execute('SELECT id,user_id FROM payments WHERE id=? FOR UPDATE', [req.params.id]);
+    if (!payment) {
+      await conn.rollback();
+      return res.status(404).json({ message: 'پرداخت یافت نشد' });
+    }
+    await deleteUserNotificationsForEntity(conn, payment.user_id, 'payment', payment.id, '/payment.html');
+    await conn.execute('DELETE FROM payments WHERE id=?', [payment.id]);
+    await conn.commit();
+    broadcastUserNotificationsChanged();
+    res.json({ message: 'پرداخت و اعلان‌های مرتبط حذف شدند' });
   } catch (err) {
+    try { await conn.rollback(); } catch (_) {}
     res.status(500).json({ message: 'خطای سرور' });
-  }
+  } finally { conn.release(); }
 });
 
 module.exports = router;

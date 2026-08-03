@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const { auth, adminAuth } = require('../middleware/auth');
+const { syncUserDebt } = require('../lib/orderDebt');
+const { deleteUserNotificationsForEntity, broadcastUserNotificationsChanged } = require('../lib/userNotifications');
 
 // GET /api/invoices
 router.get('/', auth, async (req, res) => {
@@ -28,12 +30,28 @@ router.get('/', auth, async (req, res) => {
 
 // DELETE /api/invoices/:id
 router.delete('/:id', adminAuth, async (req, res) => {
+  const conn = await db.getConnection();
   try {
-    await db.execute('UPDATE orders SET status="cancelled" WHERE id=?', [req.params.id]);
-    res.json({ message: 'فاکتور حذف شد' });
+    await conn.beginTransaction();
+    const [[order]] = await conn.execute(
+      'SELECT id,user_id FROM orders WHERE id=? FOR UPDATE',
+      [req.params.id]
+    );
+    if (!order) {
+      await conn.rollback();
+      return res.status(404).json({ message: 'فاکتور یا سفارش یافت نشد' });
+    }
+    await conn.execute('DELETE FROM invoices WHERE order_id=?', [order.id]);
+    await deleteUserNotificationsForEntity(conn, order.user_id, 'order', order.id, '/orders.html');
+    await conn.execute('UPDATE orders SET status="cancelled",debt_remaining=0 WHERE id=?', [order.id]);
+    const debt = await syncUserDebt(conn, order.user_id);
+    await conn.commit();
+    broadcastUserNotificationsChanged();
+    res.json({ message: 'فاکتور و اعلان‌های مرتبط حذف شدند', debt });
   } catch(err) {
+    try { await conn.rollback(); } catch (_) {}
     res.status(500).json({ message: 'خطای سرور' });
-  }
+  } finally { conn.release(); }
 });
 
 module.exports = router;
