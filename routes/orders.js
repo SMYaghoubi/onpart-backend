@@ -9,6 +9,7 @@ const {
   broadcastUserNotificationsChanged
 } = require('../lib/userNotifications');
 const { syncUserDebt } = require('../lib/orderDebt');
+const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
 
 const userStatusNotifications = {
   pending_expert: ['درخواست در انتظار بررسی است', 'درخواست شما برای بررسی کارشناس ثبت شده است.', 'info'],
@@ -40,7 +41,7 @@ async function notifyOrderStatus(order, status) {
 router.get('/my', auth, async (req, res) => {
   try {
     const [orders] = await db.execute(
-      `SELECT o.*, (SELECT COUNT(*) FROM order_items WHERE order_id=o.id) as items_count
+      `SELECT o.*, (SELECT status FROM payments WHERE order_id=o.id ORDER BY id DESC LIMIT 1) payment_status, (SELECT COUNT(*) FROM order_items WHERE order_id=o.id) as items_count
        FROM orders o WHERE o.user_id=? ORDER BY o.id DESC`,
       [req.user.id]
     );
@@ -75,6 +76,7 @@ router.get('/', auth, async (req, res) => {
 
     const [rows] = await db.execute(
       `SELECT o.*, u.name as user_name, u.phone as user_phone,
+       (SELECT status FROM payments WHERE order_id=o.id ORDER BY id DESC LIMIT 1) payment_status,
        (SELECT COUNT(*) FROM order_items WHERE order_id=o.id) as items_count
        FROM orders o LEFT JOIN users u ON o.user_id=u.id
        ${whereStr} ORDER BY o.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
@@ -87,15 +89,27 @@ router.get('/', auth, async (req, res) => {
 });
 
 // ── GET /api/orders/:id ──
+router.get('/:id/invoice', adminAuth, async (req, res) => {
+  try {
+    const [[order]]=await db.execute('SELECT o.*,u.name user_name,u.phone user_phone,u.city user_city,u.address user_address,(SELECT status FROM payments WHERE order_id=o.id ORDER BY id DESC LIMIT 1) payment_status FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.id=?',[req.params.id]);
+    if(!order)return res.status(404).json({message:'سفارش یافت نشد'});
+    const [items]=await db.execute('SELECT oi.*,p.code,p.description FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=? ORDER BY oi.id',[order.id]);
+    const [settingRows]=await db.execute('SELECT * FROM settings');
+    const settings={};settingRows.forEach(row=>settings[row.key]=row.value);
+    res.json({order,items,settings});
+  }catch(err){res.status(500).json({message:'خطا در دریافت اطلاعات فاکتور'})}
+});
 router.get('/:id', auth, async (req, res) => {
   try {
     const [orders] = await db.execute(
-      `SELECT o.*, u.name as user_name, u.phone as user_phone
+      `SELECT o.*, u.name as user_name, u.phone as user_phone,u.city user_city,u.address user_address,
+       (SELECT status FROM payments WHERE order_id=o.id ORDER BY id DESC LIMIT 1) payment_status
        FROM orders o LEFT JOIN users u ON o.user_id=u.id WHERE o.id=?`,
       [req.params.id]
     );
     if (!orders.length) return res.status(404).json({ message: 'سفارش یافت نشد' });
 
+    if (!['admin','partner'].includes(req.user.role) && Number(orders[0].user_id)!==Number(req.user.id)) return res.status(403).json({ message:'دسترسی غیرمجاز' });
     const [items] = await db.execute(
       `SELECT oi.*, p.description, p.code, p.brand
        FROM order_items oi LEFT JOIN products p ON oi.product_id=p.id
@@ -173,13 +187,13 @@ router.post('/', auth, async (req, res) => {
 
     for (const item of items) {
       const [[product]] = await conn.execute(
-        'SELECT * FROM products WHERE id=? AND status="active" AND stock>=?',
+        'SELECT p.*,COALESCE((SELECT sui.supplier_price FROM supplier_update_items sui WHERE sui.product_id=p.id AND sui.status="approved" ORDER BY sui.id DESC LIMIT 1),p.price) cost_price FROM products p WHERE p.id=? AND p.status="active" AND p.stock>=?',
         [item.product_id, item.quantity]
       );
       if (!product) throw new Error(`محصول ${item.product_id} موجود نیست`);
       const itemTotal = product.price * item.quantity;
       total += itemTotal;
-      orderItems.push({ product, quantity: item.quantity, price: product.price, total: itemTotal });
+      orderItems.push({ product, quantity: item.quantity, price: product.price, costPrice:product.cost_price, total: itemTotal });
     }
 
     const [result] = await conn.execute(
@@ -190,8 +204,8 @@ router.post('/', auth, async (req, res) => {
 
     for (const item of orderItems) {
       await conn.execute(
-        'INSERT INTO order_items (order_id,product_id,quantity,price,total) VALUES (?,?,?,?,?)',
-        [orderId, item.product.id, item.quantity, item.price, item.total]
+        'INSERT INTO order_items (order_id,product_id,quantity,price,cost_price,total) VALUES (?,?,?,?,?,?)',
+        [orderId,item.product.id,item.quantity,item.price,item.costPrice,item.total]
       );
       await conn.execute('UPDATE products SET stock=stock-? WHERE id=?', [item.quantity, item.product.id]);
     }
@@ -209,7 +223,7 @@ router.post('/', auth, async (req, res) => {
     // Get user info for SMS
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [req.user.id]);
     await SMS.orderConfirmed(user.phone, user.name || 'کاربر', orderId);
-    await createNotif('order', `سفارش جدید #${orderId}`, `${user.name||user.phone} یک سفارش جدید ثبت کرد`, '/admin/orders.html');
+    await createNotif('order','سفارش جدید #'+orderId,(user.name||user.phone)+' یک سفارش جدید ثبت کرد','/admin/orders.html','order',orderId);
     await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست #${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders.html', 'order_submitted', 'order', orderId);
 
     res.status(201).json({ id: orderId, total, message: 'سفارش ثبت شد' });
@@ -228,6 +242,8 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
     if (!order) return res.status(404).json({ message: 'سفارش یافت نشد' });
 
     await db.execute('UPDATE orders SET status="pending_customer" WHERE id=?', [req.params.id]);
+    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders.html');
+    notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
 
     // Don't add debt here - wait for customer to approve the invoice
 
@@ -262,6 +278,8 @@ router.patch('/:id/deliver', adminAuth, async (req, res) => {
     }
 
     await db.execute('UPDATE orders SET status="delivered" WHERE id=?', [req.params.id]);
+    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders.html');
+    notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
     await SMS.orderDelivered(order.phone, order.name||'کاربر', delivery_code);
     await notifyOrderStatus(order, 'delivered');
 
@@ -425,9 +443,10 @@ router.put('/:id/items', adminAuth, async (req, res) => {
       const itemDiscount = Number(item.discount) || 0;
       const lineTotal = Math.round(item.quantity * item.price * (1 - itemDiscount / 100));
       subtotal += lineTotal;
+      const [[costRow]]=await conn.execute('SELECT COALESCE((SELECT supplier_price FROM supplier_update_items WHERE product_id=? AND status="approved" ORDER BY id DESC LIMIT 1),?) cost_price',[item.product_id,item.price]);
       await conn.execute(
-        'INSERT INTO order_items (order_id,product_id,quantity,price,discount,total) VALUES (?,?,?,?,?,?)',
-        [req.params.id, item.product_id, item.quantity, item.price, itemDiscount, lineTotal]
+        'INSERT INTO order_items (order_id,product_id,quantity,price,cost_price,discount,total) VALUES (?,?,?,?,?,?,?)',
+        [req.params.id,item.product_id,item.quantity,item.price,costRow.cost_price,itemDiscount,lineTotal]
       );
     }
 
@@ -504,6 +523,8 @@ router.patch('/:id/customer-reject', auth, async (req, res) => {
     if (order.status !== 'pending_customer') return res.status(400).json({ message: 'این سفارش در وضعیت قابل رد نیست' });
 
     await db.execute('UPDATE orders SET status="cancelled" WHERE id=?', [req.params.id]);
+    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders.html');
+    notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
     await notifyOrderStatus(order, 'cancelled');
 
     res.json({ message: 'فاکتور رد شد', status: 'cancelled' });

@@ -5,6 +5,8 @@ const SMS = require('../config/sms');
 const { supplierAuth, adminAuth } = require('../middleware/auth');
 const { createNotif } = require('../config/notif');
 const { calculateFinalPrice, validateSupplierValues, isProductInAllowedBrands } = require('../lib/supplierPricing');
+const { buildSupplierChange } = require('../lib/supplierChanges');
+const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
 
 const MAX_ROWS = 2000;
 const cleanPhone = value => String(value || '').replace(/\D/g, '');
@@ -103,21 +105,20 @@ router.post('/updates', supplierAuth, async (req, res) => {
     for (let index=0; index<items.length; index++) {
       const raw = items[index] || {};
       const code = String(raw.code || '').trim();
-      const supplierPrice = Number(raw.supplier_price);
-      const stock = raw.stock === '' || raw.stock == null ? null : Number(raw.stock);
-      if (!code || !Number.isInteger(supplierPrice) || supplierPrice < 0 || (stock != null && (!Number.isInteger(stock) || stock < 0))) {
-        errors.push(`ردیف ${index+1}: کد، قیمت یا موجودی نامعتبر است`); continue;
-      }
-      if (seen.has(code)) { errors.push(`ردیف ${index+1}: کد ${code} تکراری است`); continue; }
+      if (!code) { errors.push('ردیف ' + (index+1) + ': کد محصول نامعتبر است'); continue; }
+      if (seen.has(code)) { errors.push('ردیف ' + (index+1) + ': کد ' + code + ' تکراری است'); continue; }
       seen.add(code);
       const [[product]] = await conn.execute('SELECT id,code,brand,supplier_id,price,stock FROM products WHERE TRIM(code)=? AND status="active"', [code]);
-      if (!product) { errors.push(`ردیف ${index+1}: محصول ${code} یافت نشد`); continue; }
-      if (!isProductInAllowedBrands(product, brands)) {
-        errors.push(`ردیف ${index+1}: دسترسی محصول ${code} داده نشده است`); continue;
+      if (!product) { errors.push('ردیف ' + (index+1) + ': محصول ' + code + ' یافت نشد'); continue; }
+      if (!isProductInAllowedBrands(product, brands)) { errors.push('ردیف ' + (index+1) + ': دسترسی محصول ' + code + ' داده نشده است'); continue; }
+      try {
+        const change = buildSupplierChange(product, raw.supplier_price, raw.stock);
+        if (change) normalized.push({ product, supplierPrice:change.supplierPrice, stock:change.stock, priceChanged:change.priceChanged });
+      } catch (validationError) {
+        errors.push('ردیف ' + (index+1) + ': ' + validationError.message);
       }
-      normalized.push({ product, supplierPrice, stock });
     }
-
+    if (!normalized.length && !errors.length) return res.status(400).json({ message:'هیچ تغییر واقعی نسبت به اطلاعات فعلی وجود ندارد' });
     await conn.beginTransaction();
     const [batchResult] = await conn.execute(
       'INSERT INTO supplier_update_batches (supplier_id,source,original_filename) VALUES (?,?,?)',
@@ -128,17 +129,18 @@ router.post('/updates', supplierAuth, async (req, res) => {
         'INSERT INTO supplier_update_errors (batch_id,error_message) VALUES (?,?)',
         [batchResult.insertId, String(error).slice(0,1000)]
       );
-    }    for (const row of normalized) {
+    }
+    for (const row of normalized) {
       await conn.execute(
         `INSERT INTO supplier_update_items
-         (batch_id,product_id,supplier_price,proposed_stock,previous_price,previous_stock)
-         VALUES (?,?,?,?,?,?)`,
-        [batchResult.insertId,row.product.id,row.supplierPrice,row.stock,row.product.price||0,row.product.stock||0]
+         (batch_id,product_id,supplier_price,proposed_stock,previous_price,previous_stock,note)
+         VALUES (?,?,?,?,?,?,?)`,
+        [batchResult.insertId,row.product.id,row.supplierPrice,row.stock,row.product.price||0,row.product.stock||0,row.priceChanged?null:'stock_only']
       );
     }
     await conn.commit();
     try {
-      await createNotif('supplier', `به‌روزرسانی قیمت #${batchResult.insertId}`, `${req.supplier.company} تعداد ${normalized.length} تغییر برای بررسی ارسال کرد`, '/admin/supplier-updates.html');
+      await createNotif('supplier','به‌روزرسانی تأمین‌کننده #'+batchResult.insertId,req.supplier.company+' تعداد '+normalized.length+' تغییر برای بررسی ارسال کرد','/admin/supplier-updates.html','supplier_batch',batchResult.insertId);
     } catch (notifError) {
       console.error('Supplier update admin notification failed:', notifError.message);
     }
@@ -210,7 +212,7 @@ router.put('/admin/suppliers/:id/scopes', adminAuth, async (req, res) => {
 router.get('/admin/updates', adminAuth, async (req, res) => {
   try {
     const status = ['pending','approved','rejected'].includes(req.query.status) ? req.query.status : null;
-    const params=[]; const where=status?'WHERE b.status=?':''; if(status) params.push(status);
+    const params=[]; const conditions=['b.archived_at IS NULL']; if(status){conditions.push('b.status=?');params.push(status)} const where='WHERE '+conditions.join(' AND ');
     const [rows] = await db.execute(
       `SELECT b.*,s.company,s.name,s.mobile,COUNT(i.id) item_count
        FROM supplier_update_batches b JOIN suppliers s ON s.id=b.supplier_id
@@ -240,8 +242,8 @@ router.patch('/admin/updates/:batchId/items/:itemId', adminAuth, async (req, res
   try {
     const values = validateSupplierValues(req.body.supplier_price, req.body.stock);
     const [result] = await db.execute(
-      'UPDATE supplier_update_items i JOIN supplier_update_batches b ON b.id=i.batch_id SET i.supplier_price=?,i.proposed_stock=? WHERE i.id=? AND i.batch_id=? AND i.status="pending" AND b.status="pending"',
-      [values.supplierPrice, values.stock, req.params.itemId, req.params.batchId]
+      'UPDATE supplier_update_items i JOIN supplier_update_batches b ON b.id=i.batch_id SET i.supplier_price=?,i.proposed_stock=?,i.note=IF(?=i.previous_price,"stock_only",NULL) WHERE i.id=? AND i.batch_id=? AND i.status="pending" AND b.status="pending"',
+      [values.supplierPrice,values.stock,values.supplierPrice,req.params.itemId,req.params.batchId]
     );
     if (!result.affectedRows) return res.status(409).json({ message:'ردیف قابل ویرایش نیست یا قبلاً بررسی شده است' });
     res.json({ message:'پیشنهاد ردیف ذخیره شد' });
@@ -279,7 +281,9 @@ router.post('/admin/updates/:id/approve', adminAuth, async (req, res) => {
     }
     await conn.execute('UPDATE supplier_update_batches SET status="approved",markup_percent=?,note=?,reviewed_by=?,reviewed_at=NOW() WHERE id=?',
       [defaultPercent,String(req.body.note||'').slice(0,1000)||null,req.user.id,batch.id]);
+    await resolveAdminNotification(conn,'supplier_batch',batch.id,'/admin/supplier-updates.html');
     await conn.commit();
+    notifyAdminNotificationsChanged({ entity_type:'supplier_batch', entity_id:Number(batch.id), resolved:true });
     res.json({ message:`${items.length} محصول با موفقیت به‌روزرسانی شد` });
   } catch(err){
     try{await conn.rollback();}catch(_){}
@@ -287,6 +291,24 @@ router.post('/admin/updates/:id/approve', adminAuth, async (req, res) => {
   } finally { conn.release(); }
 });
 
+router.delete('/admin/updates/:id', adminAuth, async (req, res) => {
+  const conn=await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [[batch]]=await conn.execute('SELECT id,status FROM supplier_update_batches WHERE id=? FOR UPDATE',[req.params.id]);
+    if(!batch){await conn.rollback();return res.status(404).json({message:'درخواست یافت نشد'})}
+    if(batch.status==='approved'){
+      await conn.execute('UPDATE supplier_update_batches SET archived_at=NOW(),archived_by=? WHERE id=?',[req.user.id,batch.id]);
+    }else{
+      await conn.execute('DELETE FROM supplier_update_batches WHERE id=?',[batch.id]);
+    }
+    await resolveAdminNotification(conn,'supplier_batch',batch.id,'/admin/supplier-updates.html');
+    await conn.commit();
+    notifyAdminNotificationsChanged({ entity_type:'supplier_batch', entity_id:Number(batch.id), resolved:true });
+    res.json({message:batch.status==='approved'?'درخواست تأییدشده بایگانی شد':'درخواست حذف شد',archived:batch.status==='approved'});
+  } catch(err){try{await conn.rollback()}catch(_){}res.status(500).json({message:'خطا در حذف درخواست'})}
+  finally{conn.release()}
+});
 router.post('/admin/updates/:id/reject', adminAuth, async (req, res) => {
   try {
     const [result]=await db.execute(
@@ -295,6 +317,8 @@ router.post('/admin/updates/:id/reject', adminAuth, async (req, res) => {
     );
     if(!result.affectedRows) return res.status(400).json({ message:'این بسته قابل رد نیست' });
     await db.execute('UPDATE supplier_update_items SET status="rejected" WHERE batch_id=?',[req.params.id]);
+    await resolveAdminNotification(db,'supplier_batch',req.params.id,'/admin/supplier-updates.html');
+    notifyAdminNotificationsChanged({ entity_type:'supplier_batch', entity_id:Number(req.params.id), resolved:true });
     res.json({ message:'تغییرات رد شد' });
   } catch(err){res.status(500).json({ message:'خطای سرور' });}
 });

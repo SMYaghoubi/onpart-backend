@@ -99,6 +99,8 @@ app.use('/api/suppliers',     require('./routes/suppliers'));
 app.use('/api/supplier-portal', require('./routes/supplierPortal'));
 app.use('/api/webauthn',      require('./routes/webauthn'));
 app.use('/api/cart',          require('./routes/cart'));
+app.use('/api/bank-cards',    require('./routes/bankCards'));
+app.use('/api/dashboard',     require('./routes/dashboard'));
 // ── Health check ──
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString(), version: '1.0.0' });

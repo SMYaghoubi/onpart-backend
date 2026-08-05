@@ -30,3 +30,7 @@ Cart rows are scoped to the authenticated user. Product identifiers and quantiti
 ## Deployment
 
 Liara supplies runtime environment variables. Do not commit .env. After deployment, verify /health, authentication, cart synchronization and order creation.
+
+
+## Bank-card encryption
+Set `CARD_ENCRYPTION_KEY` to a long random production secret. Card numbers are encrypted with AES-256-GCM and API responses expose only masked values/last4. Keep the key stable across deployments. For local backward compatibility only, `JWT_SECRET` is used when this variable is absent; production should always use a separate key.

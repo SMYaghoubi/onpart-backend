@@ -38,8 +38,8 @@ router.patch('/:id/read', adminAuth, async (req, res) => {
 // ── DELETE /api/notifications ── (admin) - clear all
 router.delete('/', adminAuth, async (req, res) => {
   try {
-    await db.execute('DELETE FROM notifications');
-    res.json({ message: 'همه اعلان‌ها پاک شد' });
+    await db.execute('DELETE FROM notifications WHERE is_read=1');
+    res.json({ message: 'اعلان‌های خوانده‌شده پاک شدند' });
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
   }
