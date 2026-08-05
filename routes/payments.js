@@ -8,9 +8,10 @@ const { auth, adminAuth } = require('../middleware/auth');
 const {
   createUserNotification,
   deleteUserNotificationsForEntity,
-  broadcastUserNotificationsChanged
+  broadcastUserNotificationsChanged,
+  broadcastUserDataChanged
 } = require('../lib/userNotifications');
-const { syncUserDebt } = require('../lib/orderDebt');
+const { approvePayment } = require('../lib/paymentApproval');
 
 // File upload setup
 const storage = multer.diskStorage({
@@ -92,65 +93,45 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
-    const [[payment]] = await conn.execute('SELECT * FROM payments WHERE id=? FOR UPDATE', [req.params.id]);
-    if (!payment) {
+    const result = await approvePayment(conn, req.params.id, req.user.id);
+    if (result.notFound) {
       await conn.rollback();
       return res.status(404).json({ message: 'پرداخت یافت نشد' });
     }
-    if (payment.status === 'approved') {
-      await conn.rollback();
-      return res.status(400).json({ message: 'این پرداخت قبلاً تأیید شده است' });
-    }
-
-    await conn.execute(
-      'UPDATE payments SET status="approved", reviewed_by=?, reviewed_at=NOW() WHERE id=?',
-      [req.user.id, req.params.id]
-    );
-
-    let debt;
-    if (payment.order_id) {
-      const [[order]] = await conn.execute(
-        'SELECT id,debt_remaining FROM orders WHERE id=? AND user_id=? FOR UPDATE',
-        [payment.order_id, payment.user_id]
-      );
-      if (order) {
-        const remaining = Math.max(0, Number(order.debt_remaining || 0) - Number(payment.amount || 0));
-        await conn.execute(
-          'UPDATE orders SET status="preparing",debt_remaining=? WHERE id=?',
-          [remaining, order.id]
-        );
-        debt = await syncUserDebt(conn, payment.user_id);
-      }
-    }
-    if (debt == null) {
-      await conn.execute('UPDATE users SET debt=GREATEST(0,debt-?) WHERE id=?', [payment.amount, payment.user_id]);
-      const [[row]] = await conn.execute('SELECT debt FROM users WHERE id=?', [payment.user_id]);
-      debt = Math.max(0, Number(row && row.debt) || 0);
-    }
-    const [[user]] = await conn.execute('SELECT * FROM users WHERE id=?', [payment.user_id]);
     await conn.commit();
 
+    if (result.alreadyApproved) {
+      broadcastUserDataChanged('payment', 'approved');
+      return res.json({ message: 'این پرداخت قبلاً تأیید شده است', already_approved: true });
+    }
+
+    const { payment, user, debt, remaining } = result;
     try { await SMS.paymentConfirmed(user.phone, user.name || 'کاربر', payment.order_id); }
     catch (smsError) { console.error('Payment confirmation SMS failed:', smsError.message); }
     await createUserNotification(
       payment.user_id,
-      'درخواست شما در حال تأمین است',
-      'پرداخت تأیید شد؛ پس از تأمین و جمع‌آوری، سفارش برای شما ارسال می‌شود.',
+      'فیش واریزی شما تأیید شد',
+      remaining > 0
+        ? 'پرداخت تأیید شد؛ ' + Number(remaining).toLocaleString() + ' تومان از بدهی سفارش باقی مانده است.'
+        : 'پرداخت تأیید شد و بدهی سفارش تسویه گردید.',
       'success',
       '/orders.html',
-      'preparing',
+      'payment_approved',
       payment.order_id ? 'order' : 'payment',
       payment.order_id || payment.id
     );
+    broadcastUserDataChanged('payment', 'approved');
+    if (payment.order_id) broadcastUserDataChanged('order', 'updated');
 
-    res.json({ message: 'پرداخت تأیید شد و بدهی به‌روزرسانی شد', debt });
+    res.json({ message: 'پرداخت تأیید شد و بدهی به‌روزرسانی شد', debt, debt_remaining: remaining });
   } catch (err) {
     try { await conn.rollback(); } catch (_) {}
+    console.error('Payment approval failed:', err.message);
     res.status(500).json({ message: 'خطای سرور' });
   } finally { conn.release(); }
 });
 
-// ── PATCH /api/payments/:id/reject ── (admin)
+// PATCH /api/payments/:id/reject
 router.patch('/:id/reject', adminAuth, async (req, res) => {
   try {
     const { reason } = req.body;
