@@ -48,7 +48,17 @@ app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 // ── Rate Limiting (disabled for now) ──
 // Rate limiting
-const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300, message: { message: 'تعداد درخواست زیاد است' } });
+const realtimeReadPaths = new Set([
+  '/api/user-notifications',
+  '/api/announcements',
+  '/api/announcements/stream'
+]);
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  skip: req => req.method === 'GET' && realtimeReadPaths.has(req.path),
+  message: { message: 'تعداد درخواست زیاد است' }
+});
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { message: 'تعداد درخواست زیاد است، لطفاً کمی صبر کنید' } });
 
 app.use(limiter);
