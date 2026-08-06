@@ -7,6 +7,7 @@ const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
 const { createUserNotification, broadcastUserDataChanged } = require('../lib/userNotifications');
+const { getCanonicalUserDebt } = require('../lib/debtReconciliation');
 
 const uploadPath = process.env.UPLOAD_PATH || './uploads';
 const storage = multer.diskStorage({
@@ -28,6 +29,7 @@ router.get('/me', auth, async (req, res) => {
       [req.user.id]
     );
     if (!rows.length) return res.status(404).json({ message: 'کاربر یافت نشد' });
+    rows[0].debt=await getCanonicalUserDebt(db,req.user.id);
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
@@ -37,8 +39,11 @@ router.get('/me', auth, async (req, res) => {
 // ── GET /api/users/:id ──
 router.get('/:id', auth, async (req, res) => {
   try {
+    if (!['admin','partner'].includes(req.user.role) && Number(req.params.id)!==Number(req.user.id))
+      return res.status(403).json({ message:'دسترسی غیرمجاز' });
     const [rows] = await db.execute('SELECT id,name,phone,email,city,state,address,postal_code,province,shop_name,national_code,phone_fixed,id_card_image,shop_image,credit_limit,debt,role,status FROM users WHERE id=?', [req.params.id]);
     if (!rows.length) return res.status(404).json({ message: 'کاربر یافت نشد' });
+    rows[0].debt=await getCanonicalUserDebt(db,req.params.id);
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
@@ -132,6 +137,7 @@ router.get('/', adminAuth, async (req, res) => {
       `SELECT id,name,phone,email,city,state,address,postal_code,province,shop_name,national_code,phone_fixed,id_card_image,shop_image,role,status,credit_limit,debt,created_at FROM users ${whereStr} ORDER BY id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
       params
     );
+    await Promise.all(rows.map(async row=>{row.debt=await getCanonicalUserDebt(db,row.id)}));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });

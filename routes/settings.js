@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db     = require('../config/database');
 const { adminAuth } = require('../middleware/auth');
 const multer = require('multer');
+const { normalizeBankAccountsForStorage, publicBankAccounts } = require('../lib/bankAccountSettings');
 
 const bankLogoUpload = multer({
   storage: multer.diskStorage({
@@ -28,7 +29,7 @@ router.get('/', async (req, res) => {
       site_whatsapp: settings.site_whatsapp,
       site_email: settings.site_email,
       site_address: settings.site_address,
-      bank_accounts: settings.bank_accounts,
+      bank_accounts: JSON.stringify(publicBankAccounts(settings.bank_accounts)),
       site_instagram: settings.site_instagram,
       min_order: settings.min_order,
       tax_rate: settings.tax_rate,
@@ -69,9 +70,12 @@ router.put('/', adminAuth, async (req, res) => {
   try {
     const settings = req.body;
     for (const [key, value] of Object.entries(settings)) {
+      const storedValue=key==='bank_accounts'
+        ? JSON.stringify(normalizeBankAccountsForStorage(value))
+        : String(value||'');
       await db.execute(
         'INSERT INTO settings (`key`, value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)',
-        [key, String(value||'')]
+        [key, storedValue]
       );
     }
     res.json({ message: 'تنظیمات ذخیره شد' });

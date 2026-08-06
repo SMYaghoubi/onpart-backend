@@ -6,7 +6,8 @@ const { createNotif } = require('../config/notif');
 const {
   createUserNotification,
   deleteUserNotificationsForEntity,
-  broadcastUserNotificationsChanged
+  broadcastUserNotificationsChanged,
+  broadcastUserDataChanged
 } = require('../lib/userNotifications');
 const { syncUserDebt } = require('../lib/orderDebt');
 const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
@@ -237,29 +238,29 @@ router.post('/', auth, async (req, res) => {
 
 // ── PATCH /api/orders/:id/approve ── (admin) - expert approval with clear confirmation SMS
 router.patch('/:id/approve', adminAuth, async (req, res) => {
+  const conn=await db.getConnection();
   try {
-    const [[order]] = await db.execute('SELECT o.*,u.phone,u.name FROM orders o JOIN users u ON o.user_id=u.id WHERE o.id=?', [req.params.id]);
-    if (!order) return res.status(404).json({ message: 'سفارش یافت نشد' });
-
-    await db.execute('UPDATE orders SET status="pending_customer" WHERE id=?', [req.params.id]);
-    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders');
-    notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
-
-    // Don't add debt here - wait for customer to approve the invoice
-
-    try {
-      await SMS.orderApproved(order.phone, order.name || 'کاربر', req.params.id);
-    } catch (smsError) {
-      console.error('Expert approval SMS failed:', smsError.message);
+    await conn.beginTransaction();
+    const [[order]] = await conn.execute('SELECT o.*,u.phone,u.name FROM orders o JOIN users u ON o.user_id=u.id WHERE o.id=? FOR UPDATE', [req.params.id]);
+    if (!order) { await conn.rollback(); return res.status(404).json({ message: 'سفارش یافت نشد' }); }
+    if (order.status === 'pending_customer') {
+      await conn.commit();
+      return res.json({ message:'این سفارش قبلاً تأیید شده است', status:'pending_customer', already_approved:true });
     }
+    if (order.status !== 'pending_expert') { await conn.rollback(); return res.status(409).json({ message:'سفارش در وضعیت قابل تأیید نیست' }); }
+    await conn.execute('UPDATE orders SET status="pending_customer" WHERE id=?', [req.params.id]);
+    await resolveAdminNotification(conn,'order',req.params.id,'/admin/orders');
+    await conn.commit();
+    notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
+    try { await SMS.orderApproved(order.phone, order.name || 'کاربر', req.params.id); }
+    catch (smsError) { console.error('Expert approval SMS failed:', smsError.message); }
     await notifyOrderStatus(order, 'pending_customer');
-
     res.json({ message: 'سفارش تایید شد', status: 'pending_customer' });
   } catch (err) {
+    try{await conn.rollback()}catch(_){}
     res.status(500).json({ message: 'خطای سرور' });
-  }
+  } finally { conn.release(); }
 });
-
 // ── PATCH /api/orders/:id/deliver ── (admin) - confirm delivery with code
 router.patch('/:id/deliver', adminAuth, async (req, res) => {
   try {
@@ -435,6 +436,14 @@ router.put('/:id/items', adminAuth, async (req, res) => {
       return res.status(400).json({ message: 'حداقل یک قلم الزامی است' });
 
     await conn.beginTransaction();
+    const [[order]] = await conn.execute(
+      'SELECT id,user_id,status FROM orders WHERE id=? FOR UPDATE',
+      [req.params.id]
+    );
+    if (!order) {
+      await conn.rollback();
+      return res.status(404).json({ message:'سفارش یافت نشد' });
+    }
 
     await conn.execute('DELETE FROM order_items WHERE order_id=?', [req.params.id]);
 
@@ -454,20 +463,13 @@ router.put('/:id/items', adminAuth, async (req, res) => {
     const finalTotal = Math.round(subtotal * (1 - overallDiscount / 100));
 
     await conn.execute('UPDATE orders SET total=?, discount_percent=? WHERE id=?', [finalTotal, overallDiscount, req.params.id]);
+    const debt=await syncUserDebt(conn,order.user_id);
     await conn.commit();
 
-    const [[order]] = await db.execute(
-      `SELECT o.id,o.user_id,u.name,u.phone FROM orders o
-       LEFT JOIN users u ON o.user_id=u.id WHERE o.id=?`,
-      [req.params.id]
-    );
-    if (order) {
-      try { await SMS.orderApproved(order.phone, order.name || 'کاربر', order.id); }
-      catch (smsError) { console.error('Invoice update SMS failed:', smsError.message); }
-      await createUserNotification(order.user_id, 'فاکتور شما به‌روزرسانی شد', `مبلغ و اقلام سفارش #${order.id} تغییر کرد؛ لطفاً فاکتور را بررسی کنید.`, 'info', '/orders', 'pending_customer', 'order', order.id);
-    }
-
-    res.json({ message: 'فاکتور به‌روزرسانی شد', total: finalTotal });
+    broadcastUserDataChanged('order','draft-updated');
+    // Editing/saving invoice data is intentionally silent. Customer SMS and
+    // notifications are emitted only by real workflow status transitions.
+    res.json({ message: 'پیش‌نویس فاکتور ذخیره شد', total: finalTotal, debt });
   } catch (err) {
     await conn.rollback();
     console.error('Update order items error:', err.message);

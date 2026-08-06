@@ -1,0 +1,5 @@
+const test=require('node:test');const assert=require('node:assert/strict');
+const {parseBankAccounts,isStoredLogoUrl,normalizeBankAccountsForStorage,publicBankAccounts}=require('../lib/bankAccountSettings');
+test('bank account logo uses the same logo field end to end',()=>{const value=JSON.stringify([{name:'شهر',logo:'/uploads/bank-logo-1.png'}]);assert.equal(publicBankAccounts(value)[0].logo,'/uploads/bank-logo-1.png')});
+test('legacy data URLs remain parseable for admin preview but are not exposed or persisted again',()=>{const legacy='data:image/png;base64,AAA';assert.equal(parseBankAccounts(JSON.stringify([{logo:legacy}]))[0].logo,legacy);assert.equal(normalizeBankAccountsForStorage(JSON.stringify([{logo:legacy}]))[0].logo,'')});
+test('only protected bank-logo upload paths persist',()=>{assert.equal(isStoredLogoUrl('/uploads/bank-logo-123.webp'),true);assert.equal(isStoredLogoUrl('https://evil.test/x.png'),false);assert.equal(isStoredLogoUrl('/uploads/receipt_1.png'),false)});
