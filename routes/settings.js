@@ -1,6 +1,19 @@
 const router = require('express').Router();
 const db     = require('../config/database');
 const { adminAuth } = require('../middleware/auth');
+const multer = require('multer');
+
+const bankLogoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, process.env.UPLOAD_PATH || './uploads'),
+    filename: (req, file, cb) => {
+      const ext = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' }[file.mimetype] || '.img';
+      cb(null, `bank-logo-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+    }
+  }),
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, ['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype))
+});
 
 // ── GET /api/settings (public - for shop) ──
 router.get('/', async (req, res) => {
@@ -43,6 +56,12 @@ router.get('/admin', adminAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
   }
+});
+
+// ── POST /api/settings/bank-logo (admin only) ──
+router.post('/bank-logo', adminAuth, bankLogoUpload.single('logo'), (req, res) => {
+  if (!req.file) return res.status(400).json({ message: 'فایل تصویر معتبر ارسال نشده است' });
+  res.status(201).json({ url: `/uploads/${encodeURIComponent(req.file.filename)}` });
 });
 
 // ── PUT /api/settings ──
