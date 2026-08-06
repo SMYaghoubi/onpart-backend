@@ -1,6 +1,8 @@
 const router = require('express').Router();
 const multer = require('multer');
 const path   = require('path');
+const fs     = require('fs');
+const crypto = require('crypto');
 const db     = require('../config/database');
 const SMS    = require('../config/sms');
 const { createNotif } = require('../config/notif');
@@ -17,18 +19,19 @@ const { calculateOrderDebt, reconcileOrderDebt } = require('../lib/debtReconcili
 const { revealCardNumber } = require('../lib/bankCards');
 const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
 const { PAYMENT_SOUND_KEYS, orderStatusAfterPaymentRejection } = require('../lib/paymentStates');
+const { getPaymentAllocations, reconcileOrdersAfterAllocationRemoval } = require('../lib/paymentAllocations');
+const { isAllowedReceiptUpload, canReadReceipt, resolveReceiptPath, receiptMime } = require('../lib/paymentReceipts');
 
 // File upload setup
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, process.env.UPLOAD_PATH || './uploads'),
-  filename:    (req, file, cb) => cb(null, `receipt_${Date.now()}${path.extname(file.originalname)}`)
+  filename:    (req, file, cb) => cb(null, `receipt_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${path.extname(file.originalname).toLowerCase()}`)
 });
 const upload = multer({
   storage,
   limits: { fileSize: Number(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = /jpeg|jpg|png|pdf/;
-    if (allowed.test(path.extname(file.originalname).toLowerCase())) cb(null, true);
+    if (isAllowedReceiptUpload(file.originalname, file.mimetype)) cb(null, true);
     else cb(new Error('فرمت فایل مجاز نیست'));
   }
 });
@@ -46,6 +49,9 @@ router.get('/', auth, async (req, res) => {
     const [rows] = await db.execute(
       `SELECT p.*, u.name as user_name, u.phone as user_phone,
         o.status order_status,o.total order_total,o.debt_remaining,
+        COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa WHERE pa.payment_id=p.id),0) allocated_amount,
+        GREATEST(p.amount-COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa WHERE pa.payment_id=p.id),0),0) unallocated_amount,
+        (SELECT GROUP_CONCAT(CONCAT(pa.order_id,':',pa.amount) ORDER BY pa.id) FROM payment_allocations pa WHERE pa.payment_id=p.id) allocation_summary,
         CASE p.status WHEN 'pending' THEN 'پرداخت ثبت شده – منتظر تأیید'
           WHEN 'approved' THEN 'پرداخت تأیید شده' WHEN 'rejected' THEN 'پرداخت رد شده' ELSE p.status END status_label
        FROM payments p
@@ -54,25 +60,47 @@ router.get('/', auth, async (req, res) => {
        ${whereStr} ORDER BY p.id DESC`,
       params
     );
-    rows.forEach(row => { const digits=String(row.src_card || '').replace(/\D/g,''); row.src_card=digits ? '****-****-****-' + digits.slice(-4) : null; });
+    rows.forEach(row => { const digits=String(row.src_card || '').replace(/\\D/g,''); row.src_card=digits ? '****-****-****-' + digits.slice(-4) : null; row.allocations=String(row.allocation_summary || '').split(',').filter(Boolean).map(value=>{const [orderId,amount]=value.split(':');return {order_id:Number(orderId),amount:Number(amount)}}); delete row.allocation_summary; row.has_receipt=Boolean(row.receipt_file); row.receipt_type=row.receipt_file ? path.extname(row.receipt_file).slice(1).toLowerCase() : null; delete row.receipt_file; });
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
   }
 });
 
+// ── GET /api/payments/:id/receipt ── protected owner/admin receipt stream
+router.get('/:id/receipt', auth, async (req, res) => {
+  try {
+    const [[payment]] = await db.execute('SELECT id,user_id,receipt_file FROM payments WHERE id=?', [req.params.id]);
+    if (!payment) return res.status(404).json({ message:'پرداخت یافت نشد' });
+    if (!canReadReceipt(req.user, payment)) return res.status(403).json({ message:'دسترسی غیرمجاز' });
+    if (!payment.receipt_file) return res.status(404).json({ message:'فیشی برای این پرداخت ثبت نشده است' });
+    const resolved = resolveReceiptPath(process.env.UPLOAD_PATH || './uploads', payment.receipt_file);
+    const mime = receiptMime(payment.receipt_file);
+    if (!resolved || !mime) return res.status(400).json({ message:'مسیر فایل فیش نامعتبر است' });
+    try { await fs.promises.access(resolved, fs.constants.R_OK); }
+    catch (_) { return res.status(404).json({ message:'فایل فیش در فضای ذخیره‌سازی یافت نشد' }); }
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Disposition', `${req.query.download==='1'?'attachment':'inline'}; filename="receipt-${payment.id}${path.extname(payment.receipt_file).toLowerCase()}"`);
+    return res.sendFile(resolved);
+  } catch (error) {
+    console.error('Payment receipt retrieval failed:', error.message);
+    return res.status(500).json({ message:'خطا در دریافت فایل فیش' });
+  }
+});
 // ── POST /api/payments/receipt ── (upload)
 router.post('/receipt', auth, upload.single('file'), async (req, res) => {
   try {
     const { amount, bank, track_number, pay_date, order_id, saved_card_id, dest_account } = req.body;
-    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0)
+    const numericAmount=Number(amount);
+    if (!Number.isSafeInteger(numericAmount) || numericAmount <= 0)
       return res.status(400).json({ message: 'مبلغ واریزی نامعتبر است' });
 
     let linkedOrder = null;
     if (order_id) {
       [[linkedOrder]] = await db.execute(
         `SELECT o.id,o.user_id,o.status,o.total,o.debt_remaining,
-          COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id=o.id AND p.status='approved'),0) approved_amount
+          COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa WHERE pa.order_id=o.id),0) approved_amount
          FROM orders o WHERE o.id=? AND o.user_id=?`,
         [order_id, req.user.id]
       );
@@ -97,7 +125,7 @@ router.post('/receipt', auth, upload.single('file'), async (req, res) => {
 
     const [result] = await db.execute(
       'INSERT INTO payments (user_id,order_id,amount,bank,track_number,receipt_file,pay_date,src_card,saved_card_id,dest_account,status) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [req.user.id, order_id || null, amount, sourceBank, track_number, receiptFile, safePayDate, sourceCardMasked, savedCardId, dest_account||null, 'pending']
+      [req.user.id, order_id || null, numericAmount, sourceBank, track_number, receiptFile, safePayDate, sourceCardMasked, savedCardId, dest_account||null, 'pending']
     );
 
     // Notify admin and send SMS to customer
@@ -115,6 +143,7 @@ router.post('/receipt', auth, upload.single('file'), async (req, res) => {
       'info','/payment',PAYMENT_SOUND_KEYS.submitted,'payment',result.insertId
     ); } catch(error){ console.error('Payment submitted user notification failed:',error.message); }
 
+    broadcastUserDataChanged('payment','submitted');
     res.status(201).json({ id: result.insertId, message: 'فیش واریز ثبت شد' });
   } catch (err) {
     console.error('Payment receipt upload error:', err.message);
@@ -141,25 +170,25 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
       return res.json({ message: 'این پرداخت قبلاً تأیید شده است', already_approved: true });
     }
 
-    const { payment, user, debt, remaining } = result;
+    const { payment, user, debt, remaining, allocations, unallocatedAmount } = result;
     try { await SMS.paymentConfirmed(user.phone, user.name || 'کاربر', payment.order_id); }
     catch (smsError) { console.error('Payment confirmation SMS failed:', smsError.message); }
     try { await createUserNotification(
       payment.user_id,
       'فیش واریزی شما تأیید شد',
-      remaining > 0
-        ? 'پرداخت تأیید شد؛ ' + Number(remaining).toLocaleString() + ' تومان از بدهی سفارش باقی مانده است.'
-        : 'پرداخت تأیید شد و بدهی سفارش تسویه گردید.',
+      debt > 0
+        ? 'پرداخت تأیید شد؛ ' + Number(debt).toLocaleString() + ' تومان از بدهی شما باقی مانده است.'
+        : 'پرداخت تأیید شد و بدهی شما تسویه گردید.',
       'success',
       '/orders',
       PAYMENT_SOUND_KEYS.approved,
-      payment.order_id ? 'order' : 'payment',
-      payment.order_id || payment.id
+      allocations.length ? 'order' : 'payment',
+      allocations.length ? allocations[0].order_id : payment.id
     ); } catch(error){ console.error('Payment approval user notification failed:',error.message); }
     broadcastUserDataChanged('payment', 'approved');
-    if (payment.order_id) broadcastUserDataChanged('order', 'updated');
+    if (allocations.length) broadcastUserDataChanged('order', 'updated');
 
-    res.json({ message: 'پرداخت تأیید شد و بدهی به‌روزرسانی شد', debt, debt_remaining: remaining });
+    res.json({ message: 'پرداخت تأیید شد و بدهی به‌روزرسانی شد', debt, debt_remaining: remaining, allocations, unallocated_amount:unallocatedAmount });
   } catch (err) {
     try { await conn.rollback(); } catch (_) {}
     console.error('Payment approval failed:', err.message);
@@ -205,20 +234,18 @@ router.delete('/:id', adminAuth, async (req, res) => {
       await conn.rollback();
       return res.status(404).json({ message: 'پرداخت یافت نشد' });
     }
+    const allocations = await getPaymentAllocations(conn, payment.id);
+    const affectedOrderIds = [...new Set(allocations.map(row=>Number(row.order_id)).filter(Boolean))];
+    if (!affectedOrderIds.length && payment.order_id) affectedOrderIds.push(Number(payment.order_id));
     await deleteUserNotificationsForEntity(conn, payment.user_id, 'payment', payment.id, '/payment');
     await conn.execute('DELETE FROM payments WHERE id=?', [payment.id]);
-    let orderDebt=null;
-    if(payment.order_id){
-      const reconciled=await reconcileOrderDebt(conn,payment.order_id);
-      orderDebt=reconciled&&reconciled.debt_remaining;
-      if(reconciled&&orderDebt>0) await conn.execute('UPDATE orders SET status="pending_payment" WHERE id=?',[payment.order_id]);
-    }
+    const restoredOrders=await reconcileOrdersAfterAllocationRemoval(conn,affectedOrderIds);
     const debt=await syncUserDebt(conn,payment.user_id);
     await conn.commit();
     broadcastUserNotificationsChanged();
     broadcastUserDataChanged('payment','deleted');
-    if(payment.order_id) broadcastUserDataChanged('order','updated');
-    res.json({ message: 'پرداخت و اعلان‌های مرتبط حذف شدند', debt, debt_remaining:orderDebt });
+    if(affectedOrderIds.length) broadcastUserDataChanged('order','updated');
+    res.json({ message: 'پرداخت و اعلان‌های مرتبط حذف شدند', debt, restored_orders:restoredOrders });
   } catch (err) {
     try { await conn.rollback(); } catch (_) {}
     res.status(500).json({ message: 'خطای سرور' });

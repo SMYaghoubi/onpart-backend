@@ -79,7 +79,10 @@ app.use((req, res, next) => {
 // app.use('/api/auth/', authLimiter);
 
 // ── Static uploads ──
-app.use('/uploads', express.static(uploadPath));
+app.use('/uploads', (req,res,next) => {
+  if (/^\/receipt_/i.test(req.path)) return res.status(404).json({ message:'مسیر عمومی فایل فیش غیرفعال است' });
+  next();
+}, express.static(uploadPath));
 
 // ── Routes ──
 app.use('/api/auth',     require('./routes/auth'));

@@ -42,7 +42,7 @@ async function notifyOrderStatus(order, status) {
 router.get('/my', auth, async (req, res) => {
   try {
     const [orders] = await db.execute(
-      `SELECT o.*, (SELECT status FROM payments WHERE order_id=o.id ORDER BY id DESC LIMIT 1) payment_status, (SELECT COUNT(*) FROM order_items WHERE order_id=o.id) as items_count
+      `SELECT o.*, (SELECT p.status FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id ORDER BY p.id DESC LIMIT 1) payment_status, (SELECT COUNT(*) FROM order_items WHERE order_id=o.id) as items_count
        FROM orders o WHERE o.user_id=? ORDER BY o.id DESC`,
       [req.user.id]
     );
@@ -77,7 +77,7 @@ router.get('/', auth, async (req, res) => {
 
     const [rows] = await db.execute(
       `SELECT o.*, u.name as user_name, u.phone as user_phone,
-       (SELECT status FROM payments WHERE order_id=o.id ORDER BY id DESC LIMIT 1) payment_status,
+       (SELECT p.status FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id ORDER BY p.id DESC LIMIT 1) payment_status,
        (SELECT COUNT(*) FROM order_items WHERE order_id=o.id) as items_count
        FROM orders o LEFT JOIN users u ON o.user_id=u.id
        ${whereStr} ORDER BY o.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
@@ -92,7 +92,7 @@ router.get('/', auth, async (req, res) => {
 // ── GET /api/orders/:id ──
 router.get('/:id/invoice', adminAuth, async (req, res) => {
   try {
-    const [[order]]=await db.execute('SELECT o.*,u.name user_name,u.phone user_phone,u.city user_city,u.address user_address,(SELECT status FROM payments WHERE order_id=o.id ORDER BY id DESC LIMIT 1) payment_status FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.id=?',[req.params.id]);
+    const [[order]]=await db.execute('SELECT o.*,u.name user_name,u.phone user_phone,u.city user_city,u.address user_address,(SELECT p.status FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id ORDER BY p.id DESC LIMIT 1) payment_status FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.id=?',[req.params.id]);
     if(!order)return res.status(404).json({message:'سفارش یافت نشد'});
     const [items]=await db.execute('SELECT oi.*,p.code,p.description FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=? ORDER BY oi.id',[order.id]);
     const [settingRows]=await db.execute('SELECT * FROM settings');
@@ -104,7 +104,7 @@ router.get('/:id', auth, async (req, res) => {
   try {
     const [orders] = await db.execute(
       `SELECT o.*, u.name as user_name, u.phone as user_phone,u.city user_city,u.address user_address,
-       (SELECT status FROM payments WHERE order_id=o.id ORDER BY id DESC LIMIT 1) payment_status
+       (SELECT p.status FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id ORDER BY p.id DESC LIMIT 1) payment_status
        FROM orders o LEFT JOIN users u ON o.user_id=u.id WHERE o.id=?`,
       [req.params.id]
     );

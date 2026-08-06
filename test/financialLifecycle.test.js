@@ -21,7 +21,7 @@ test('expert approval is idempotent before SMS and notification side effects',()
 
 test('rejected payment remains debt and removing an approved payment restores debt',()=>{
   assert.equal(calculateOrderDebt(90000,0,'pending_payment'),90000);
-  assert.match(paymentsSource,/DELETE FROM payments[\s\S]*reconcileOrderDebt[\s\S]*syncUserDebt/);
+  assert.match(paymentsSource,/DELETE FROM payments[\s\S]*reconcileOrdersAfterAllocationRemoval[\s\S]*syncUserDebt/);
 });
 test('payment approve/reject side effects happen only after a real transition',()=>{
   const approveStart=paymentsSource.indexOf("router.patch('/:id/approve'");
@@ -31,4 +31,5 @@ test('payment approve/reject side effects happen only after a real transition',(
   assert.ok(approve.indexOf('result.alreadyApproved')<approve.indexOf('SMS.paymentConfirmed'));
   assert.ok(reject.indexOf("payment.status==='rejected'")<reject.indexOf('SMS.paymentRejected'));
   assert.ok(reject.indexOf("payment.status==='approved'")<reject.indexOf('SMS.paymentRejected'));
+  assert.doesNotMatch(reject,/allocateApprovedPayment|INSERT INTO payment_allocations/);
 });
