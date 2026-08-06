@@ -211,9 +211,9 @@ router.patch('/:id/status', adminAuth, async (req, res) => {
       else if (status === 'pending') await SMS.accountPending(user.phone, user.name || 'کاربر');
     }
     if (user && status === 'active') {
-      await createUserNotification(user.id, 'حساب شما تأیید شد', 'حساب کاربری شما توسط مدیریت فعال شد.', 'success', '/profile.html', null, 'account', user.id);
+      await createUserNotification(user.id, 'حساب شما تأیید شد', 'حساب کاربری شما توسط مدیریت فعال شد.', 'success', '/profile', null, 'account', user.id);
     } else if (user && status === 'pending') {
-      await createUserNotification(user.id, 'حساب در انتظار بررسی است', 'وضعیت حساب شما به در انتظار بررسی تغییر کرد.', 'info', '/profile.html', null, 'account', user.id);
+      await createUserNotification(user.id, 'حساب در انتظار بررسی است', 'وضعیت حساب شما به در انتظار بررسی تغییر کرد.', 'info', '/profile', null, 'account', user.id);
     } else {
       broadcastUserDataChanged('profile', status);
     }

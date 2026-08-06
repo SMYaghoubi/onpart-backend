@@ -140,7 +140,7 @@ router.post('/updates', supplierAuth, async (req, res) => {
     }
     await conn.commit();
     try {
-      await createNotif('supplier','به‌روزرسانی تأمین‌کننده #'+batchResult.insertId,req.supplier.company+' تعداد '+normalized.length+' تغییر برای بررسی ارسال کرد','/admin/supplier-updates.html','supplier_batch',batchResult.insertId);
+      await createNotif('supplier','به‌روزرسانی تأمین‌کننده #'+batchResult.insertId,req.supplier.company+' تعداد '+normalized.length+' تغییر برای بررسی ارسال کرد','/admin/supplier-updates','supplier_batch',batchResult.insertId);
     } catch (notifError) {
       console.error('Supplier update admin notification failed:', notifError.message);
     }
@@ -281,7 +281,7 @@ router.post('/admin/updates/:id/approve', adminAuth, async (req, res) => {
     }
     await conn.execute('UPDATE supplier_update_batches SET status="approved",markup_percent=?,note=?,reviewed_by=?,reviewed_at=NOW() WHERE id=?',
       [defaultPercent,String(req.body.note||'').slice(0,1000)||null,req.user.id,batch.id]);
-    await resolveAdminNotification(conn,'supplier_batch',batch.id,'/admin/supplier-updates.html');
+    await resolveAdminNotification(conn,'supplier_batch',batch.id,'/admin/supplier-updates');
     await conn.commit();
     notifyAdminNotificationsChanged({ entity_type:'supplier_batch', entity_id:Number(batch.id), resolved:true });
     res.json({ message:`${items.length} محصول با موفقیت به‌روزرسانی شد` });
@@ -302,7 +302,7 @@ router.delete('/admin/updates/:id', adminAuth, async (req, res) => {
     }else{
       await conn.execute('DELETE FROM supplier_update_batches WHERE id=?',[batch.id]);
     }
-    await resolveAdminNotification(conn,'supplier_batch',batch.id,'/admin/supplier-updates.html');
+    await resolveAdminNotification(conn,'supplier_batch',batch.id,'/admin/supplier-updates');
     await conn.commit();
     notifyAdminNotificationsChanged({ entity_type:'supplier_batch', entity_id:Number(batch.id), resolved:true });
     res.json({message:batch.status==='approved'?'درخواست تأییدشده بایگانی شد':'درخواست حذف شد',archived:batch.status==='approved'});
@@ -317,7 +317,7 @@ router.post('/admin/updates/:id/reject', adminAuth, async (req, res) => {
     );
     if(!result.affectedRows) return res.status(400).json({ message:'این بسته قابل رد نیست' });
     await db.execute('UPDATE supplier_update_items SET status="rejected" WHERE batch_id=?',[req.params.id]);
-    await resolveAdminNotification(db,'supplier_batch',req.params.id,'/admin/supplier-updates.html');
+    await resolveAdminNotification(db,'supplier_batch',req.params.id,'/admin/supplier-updates');
     notifyAdminNotificationsChanged({ entity_type:'supplier_batch', entity_id:Number(req.params.id), resolved:true });
     res.json({ message:'تغییرات رد شد' });
   } catch(err){res.status(500).json({ message:'خطای سرور' });}

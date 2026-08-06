@@ -29,7 +29,7 @@ async function notifyOrderStatus(order, status) {
     message[0],
     `${message[1]} شماره سفارش: #${order.id}`,
     message[2],
-    '/orders.html',
+    '/orders',
     status,
     'order',
     order.id
@@ -164,7 +164,7 @@ router.post('/manual', adminAuth, async (req, res) => {
       try { await SMS.orderConfirmed(manualUser.phone, manualUser.name || 'کاربر', orderId); }
       catch (smsError) { console.error('Manual order SMS failed:', smsError.message); }
     }
-    await createUserNotification(finalUserId, 'سفارش جدید برای شما ثبت شد', `سفارش #${orderId} در پنل ثبت شد.`, 'info', '/orders.html', 'order_submitted', 'order', orderId);
+    await createUserNotification(finalUserId, 'سفارش جدید برای شما ثبت شد', `سفارش #${orderId} در پنل ثبت شد.`, 'info', '/orders', 'order_submitted', 'order', orderId);
 
     res.status(201).json({ id: orderId, message: 'سفارش ثبت شد', user_id: finalUserId });
   } catch (err) {
@@ -223,8 +223,8 @@ router.post('/', auth, async (req, res) => {
     // Get user info for SMS
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [req.user.id]);
     await SMS.orderConfirmed(user.phone, user.name || 'کاربر', orderId);
-    await createNotif('order','سفارش جدید #'+orderId,(user.name||user.phone)+' یک سفارش جدید ثبت کرد','/admin/orders.html','order',orderId);
-    await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست #${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders.html', 'order_submitted', 'order', orderId);
+    await createNotif('order','سفارش جدید #'+orderId,(user.name||user.phone)+' یک سفارش جدید ثبت کرد','/admin/orders','order',orderId);
+    await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست #${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders', 'order_submitted', 'order', orderId);
 
     res.status(201).json({ id: orderId, total, message: 'سفارش ثبت شد' });
   } catch (err) {
@@ -242,7 +242,7 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
     if (!order) return res.status(404).json({ message: 'سفارش یافت نشد' });
 
     await db.execute('UPDATE orders SET status="pending_customer" WHERE id=?', [req.params.id]);
-    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders.html');
+    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders');
     notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
 
     // Don't add debt here - wait for customer to approve the invoice
@@ -278,7 +278,7 @@ router.patch('/:id/deliver', adminAuth, async (req, res) => {
     }
 
     await db.execute('UPDATE orders SET status="delivered" WHERE id=?', [req.params.id]);
-    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders.html');
+    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders');
     notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
     await SMS.orderDelivered(order.phone, order.name||'کاربر', delivery_code);
     await notifyOrderStatus(order, 'delivered');
@@ -405,7 +405,7 @@ router.delete('/:id', adminAuth, async (req, res) => {
     }
     await conn.execute('DELETE FROM order_items WHERE order_id=?', [req.params.id]);
     await conn.execute('DELETE FROM invoices WHERE order_id=?', [req.params.id]).catch(()=>{});
-    await deleteUserNotificationsForEntity(conn, order.user_id, 'order', order.id, '/orders.html');
+    await deleteUserNotificationsForEntity(conn, order.user_id, 'order', order.id, '/orders');
     await conn.execute('DELETE FROM orders WHERE id=?', [req.params.id]);
     const debt = await syncUserDebt(conn, order.user_id);
     await conn.commit();
@@ -414,7 +414,7 @@ router.delete('/:id', adminAuth, async (req, res) => {
     catch (smsError) { console.error('Delete order SMS failed:', smsError.message); }
     await createUserNotification(
       order.user_id, 'سفارش حذف شد', `سفارش #${order.id} توسط مدیریت حذف شد.`,
-      'warning', '/orders.html', 'cancelled', null, null
+      'warning', '/orders', 'cancelled', null, null
     );
     res.json({ message: 'سفارش حذف شد و بدهی مشتری اصلاح شد', debt });
   } catch (err) {
@@ -464,7 +464,7 @@ router.put('/:id/items', adminAuth, async (req, res) => {
     if (order) {
       try { await SMS.orderApproved(order.phone, order.name || 'کاربر', order.id); }
       catch (smsError) { console.error('Invoice update SMS failed:', smsError.message); }
-      await createUserNotification(order.user_id, 'فاکتور شما به‌روزرسانی شد', `مبلغ و اقلام سفارش #${order.id} تغییر کرد؛ لطفاً فاکتور را بررسی کنید.`, 'info', '/orders.html', 'pending_customer', 'order', order.id);
+      await createUserNotification(order.user_id, 'فاکتور شما به‌روزرسانی شد', `مبلغ و اقلام سفارش #${order.id} تغییر کرد؛ لطفاً فاکتور را بررسی کنید.`, 'info', '/orders', 'pending_customer', 'order', order.id);
     }
 
     res.json({ message: 'فاکتور به‌روزرسانی شد', total: finalTotal });
@@ -523,7 +523,7 @@ router.patch('/:id/customer-reject', auth, async (req, res) => {
     if (order.status !== 'pending_customer') return res.status(400).json({ message: 'این سفارش در وضعیت قابل رد نیست' });
 
     await db.execute('UPDATE orders SET status="cancelled" WHERE id=?', [req.params.id]);
-    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders.html');
+    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders');
     notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
     await notifyOrderStatus(order, 'cancelled');
 

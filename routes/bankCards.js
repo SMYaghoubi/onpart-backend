@@ -1,11 +1,17 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { auth } = require('../middleware/auth');
-const { protectCardNumber, publicCard } = require('../lib/bankCards');
+const { protectCardNumber, publicCard, resolveIranianBank } = require('../lib/bankCards');
 
 router.get('/', auth, async (req, res) => {
   try {
-    const [rows] = await db.execute('SELECT id,title,last4,created_at FROM user_bank_cards WHERE user_id=? ORDER BY id DESC LIMIT 20', [req.user.id]);
+    let rows;
+    try {
+      [rows] = await db.execute('SELECT id,title,bank_code,bank_name,last4,created_at FROM user_bank_cards WHERE user_id=? ORDER BY id DESC LIMIT 20', [req.user.id]);
+    } catch (error) {
+      if (error.code !== 'ER_BAD_FIELD_ERROR') throw error;
+      [rows] = await db.execute('SELECT id,title,last4,created_at FROM user_bank_cards WHERE user_id=? ORDER BY id DESC LIMIT 20', [req.user.id]);
+    }
     res.json({ cards: rows.map(publicCard) });
   } catch (err) { res.status(500).json({ message: 'خطا در دریافت کارت‌ها' }); }
 });
@@ -13,9 +19,10 @@ router.get('/', auth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
   try {
     const card = protectCardNumber(req.body.card_number);
+    const bank = resolveIranianBank(req.body.bank_code);
     const title = String(req.body.title || '').trim().slice(0, 80) || null;
-    const [result] = await db.execute('INSERT INTO user_bank_cards (user_id,encrypted_number,number_iv,number_tag,fingerprint,last4,title) VALUES (?,?,?,?,?,?,?)', [req.user.id,card.encryptedNumber,card.iv,card.tag,card.fingerprint,card.last4,title]);
-    res.status(201).json({ card: publicCard({ id:result.insertId,title,last4:card.last4 }) });
+    const [result] = await db.execute('INSERT INTO user_bank_cards (user_id,encrypted_number,number_iv,number_tag,fingerprint,last4,title,bank_code,bank_name) VALUES (?,?,?,?,?,?,?,?,?)', [req.user.id,card.encryptedNumber,card.iv,card.tag,card.fingerprint,card.last4,title,bank.bankCode,bank.bankName]);
+    res.status(201).json({ card: publicCard({ id:result.insertId,title,last4:card.last4,bank_code:bank.bankCode,bank_name:bank.bankName }) });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ message:'این کارت قبلاً ذخیره شده است' });
     res.status(400).json({ message:err.message || 'شماره کارت نامعتبر است' });

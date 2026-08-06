@@ -29,7 +29,7 @@ router.post('/', async (req, res) => {
     if (!isAdminAdd) {
       await SMS.supplierRegistered(mobile, name, trackId);
     }
-    await createNotif('supplier', 'درخواست همکاری جدید', `${company} — ${name} — ${mobile}`, '/admin/partners.html');
+    await createNotif('supplier', 'درخواست همکاری جدید', `${company} — ${name} — ${mobile}`, '/admin/partners');
 
     res.status(201).json({ id: trackId, message: 'درخواست همکاری ثبت شد' });
   } catch (err) {

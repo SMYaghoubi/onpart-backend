@@ -60,7 +60,7 @@ router.post('/verify-otp', async (req, res) => {
       );
       [rows] = await db.execute('SELECT * FROM users WHERE id=?', [result.insertId]);
       user = rows[0];
-      await createNotif('user', 'کاربر جدید ثبت‌نام کرد', `شماره: ${phone}`, '/admin/users.html');
+      await createNotif('user', 'کاربر جدید ثبت‌نام کرد', `شماره: ${phone}`, '/admin/users');
     }
 
     if (user.status === 'pending')

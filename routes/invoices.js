@@ -42,7 +42,7 @@ router.delete('/:id', adminAuth, async (req, res) => {
       return res.status(404).json({ message: 'فاکتور یا سفارش یافت نشد' });
     }
     await conn.execute('DELETE FROM invoices WHERE order_id=?', [order.id]);
-    await deleteUserNotificationsForEntity(conn, order.user_id, 'order', order.id, '/orders.html');
+    await deleteUserNotificationsForEntity(conn, order.user_id, 'order', order.id, '/orders');
     await conn.execute('UPDATE orders SET status="cancelled",debt_remaining=0 WHERE id=?', [order.id]);
     const debt = await syncUserDebt(conn, order.user_id);
     await conn.commit();

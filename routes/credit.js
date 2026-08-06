@@ -64,7 +64,7 @@ router.post('/', auth, upload.fields([
     );
 
     res.status(201).json({ id: result.insertId, message: 'درخواست اعتبار ثبت شد' });
-    await createNotif('credit', 'درخواست اعتبار جدید', `از ${full_name||'کاربر'} به مبلغ ${Number(amount).toLocaleString()} تومان`, '/admin/credit.html');
+    await createNotif('credit', 'درخواست اعتبار جدید', `از ${full_name||'کاربر'} به مبلغ ${Number(amount).toLocaleString()} تومان`, '/admin/credit');
   } catch (err) {
     console.error('Credit POST error:', err.message);
     res.status(500).json({ message: 'خطای سرور' });
@@ -87,7 +87,7 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
 
     const [[user]] = await db.execute('SELECT phone, name FROM users WHERE id=?', [request.user_id]);
     if (user) await SMS.send(user.phone, `درخواست اعتبار شما به مبلغ ${finalAmount.toLocaleString()} تومان تأیید شد. آن‌پارت`);
-    await createUserNotification(request.user_id, 'درخواست اعتبار تأیید شد', `اعتبار شما به مبلغ ${Number(finalAmount).toLocaleString()} تومان افزایش یافت.`, 'success', '/profile.html', null, 'credit', request.id);
+    await createUserNotification(request.user_id, 'درخواست اعتبار تأیید شد', `اعتبار شما به مبلغ ${Number(finalAmount).toLocaleString()} تومان افزایش یافت.`, 'success', '/profile', null, 'credit', request.id);
 
     res.json({ message: 'درخواست تأیید شد' });
   } catch (err) {
@@ -109,7 +109,7 @@ router.patch('/:id/reject', adminAuth, async (req, res) => {
 
     const [[user]] = await db.execute('SELECT phone FROM users WHERE id=?', [request.user_id]);
     if (user) await SMS.send(user.phone, `متأسفانه درخواست اعتبار شما رد شد. آن‌پارت`);
-    await createUserNotification(request.user_id, 'درخواست اعتبار رد شد', note || 'درخواست اعتبار شما توسط مدیریت تأیید نشد.', 'warning', '/profile.html', null, 'credit', request.id);
+    await createUserNotification(request.user_id, 'درخواست اعتبار رد شد', note || 'درخواست اعتبار شما توسط مدیریت تأیید نشد.', 'warning', '/profile', null, 'credit', request.id);
 
     res.json({ message: 'درخواست رد شد' });
   } catch (err) {
