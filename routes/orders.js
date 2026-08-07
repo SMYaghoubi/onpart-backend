@@ -11,6 +11,19 @@ const {
 } = require('../lib/userNotifications');
 const { syncUserDebt } = require('../lib/orderDebt');
 const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
+const { VALID_STATUSES, validateOrderTransition } = require('../lib/orderWorkflow');
+
+const orderForTransitionSql = `SELECT o.*,u.phone,u.name,
+  COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id AND p.status='approved'),0) approved_amount,
+  EXISTS(SELECT 1 FROM payments p WHERE p.order_id=o.id AND p.status='approved') has_approved_payment,
+  (SELECT p.status FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id ORDER BY p.id DESC LIMIT 1) payment_status
+  FROM orders o JOIN users u ON o.user_id=u.id WHERE o.id=? FOR UPDATE`;
+
+const transitionMessages = {
+  INVALID_TRANSITION: 'تغییر وضعیت انتخاب‌شده با روند سفارش سازگار نیست',
+  INVALID_CURRENT_STATUS: 'وضعیت فعلی سفارش معتبر نیست',
+  PAYMENT_REQUIRED: 'تا پیش از تأیید کامل پرداخت، ادامه روند سفارش مجاز نیست'
+};
 
 const userStatusNotifications = {
   pending_expert: ['درخواست در انتظار بررسی است', 'درخواست شما برای بررسی کارشناس ثبت شده است.', 'info'],
@@ -50,7 +63,7 @@ router.get('/my', auth, async (req, res) => {
     // Get items for each order
     for(const order of orders){
       const [items] = await db.execute(
-        `SELECT oi.*, p.description, p.code FROM order_items oi 
+        `SELECT oi.*, p.description, p.code, COALESCE(NULLIF(oi.car_name,''),p.car) car FROM order_items oi
          LEFT JOIN products p ON oi.product_id=p.id 
          WHERE oi.order_id=?`,
         [order.id]
@@ -94,7 +107,7 @@ router.get('/:id/invoice', adminAuth, async (req, res) => {
   try {
     const [[order]]=await db.execute('SELECT o.*,u.name user_name,u.phone user_phone,u.city user_city,u.address user_address,(SELECT p.status FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id ORDER BY p.id DESC LIMIT 1) payment_status FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.id=?',[req.params.id]);
     if(!order)return res.status(404).json({message:'سفارش یافت نشد'});
-    const [items]=await db.execute('SELECT oi.*,p.code,p.description FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=? ORDER BY oi.id',[order.id]);
+    const [items]=await db.execute(`SELECT oi.*,p.code,p.description,COALESCE(NULLIF(oi.car_name,''),p.car) car FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=? ORDER BY oi.id`,[order.id]);
     const [settingRows]=await db.execute('SELECT * FROM settings');
     const settings={};settingRows.forEach(row=>settings[row.key]=row.value);
     res.json({order,items,settings});
@@ -112,7 +125,7 @@ router.get('/:id', auth, async (req, res) => {
 
     if (!['admin','partner'].includes(req.user.role) && Number(orders[0].user_id)!==Number(req.user.id)) return res.status(403).json({ message:'دسترسی غیرمجاز' });
     const [items] = await db.execute(
-      `SELECT oi.*, p.description, p.code, p.brand
+      `SELECT oi.*, p.description, p.code, p.brand, COALESCE(NULLIF(oi.car_name,''),p.car) car
        FROM order_items oi LEFT JOIN products p ON oi.product_id=p.id
        WHERE oi.order_id=?`,
       [req.params.id]
@@ -205,8 +218,8 @@ router.post('/', auth, async (req, res) => {
 
     for (const item of orderItems) {
       await conn.execute(
-        'INSERT INTO order_items (order_id,product_id,quantity,price,cost_price,total) VALUES (?,?,?,?,?,?)',
-        [orderId,item.product.id,item.quantity,item.price,item.costPrice,item.total]
+        'INSERT INTO order_items (order_id,product_id,car_name,quantity,price,cost_price,total) VALUES (?,?,?,?,?,?,?)',
+        [orderId,item.product.id,item.product.car||null,item.quantity,item.price,item.costPrice,item.total]
       );
       await conn.execute('UPDATE products SET stock=stock-? WHERE id=?', [item.quantity, item.product.id]);
     }
@@ -263,91 +276,95 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
 });
 // ── PATCH /api/orders/:id/deliver ── (admin) - confirm delivery with code
 router.patch('/:id/deliver', adminAuth, async (req, res) => {
+  const conn=await db.getConnection();
   try {
     const { delivery_code } = req.body;
     if(!delivery_code) return res.status(400).json({ message: 'کد تحویل الزامی است' });
-
-    const [[order]] = await db.execute(
-      'SELECT o.*,u.phone,u.name FROM orders o JOIN users u ON o.user_id=u.id WHERE o.id=?',
-      [req.params.id]
-    );
-    if(!order) return res.status(404).json({ message: 'سفارش یافت نشد' });
-
-    // For driver methods, verify code
+    await conn.beginTransaction();
+    const [[order]] = await conn.execute(orderForTransitionSql, [req.params.id]);
+    if(!order){ await conn.rollback(); return res.status(404).json({ message:'سفارش یافت نشد' }); }
+    const transition=validateOrderTransition(order,'delivered');
+    if(!transition.ok){ await conn.rollback(); return res.status(transition.statusCode).json({message:transitionMessages[transition.code]||'تغییر وضعیت مجاز نیست',code:transition.code}); }
+    if(transition.unchanged){ await conn.commit(); return res.json({message:'سفارش قبلاً تحویل شده است',status:'delivered',unchanged:true}); }
     if(order.delivery_code && order.delivery_code !== String(delivery_code)){
+      await conn.rollback();
       return res.status(400).json({ message: 'کد تحویل اشتباه است' });
     }
-
-    await db.execute('UPDATE orders SET status="delivered" WHERE id=?', [req.params.id]);
-    await resolveAdminNotification(db,'order',req.params.id,'/admin/orders');
+    await conn.execute('UPDATE orders SET status="delivered" WHERE id=?', [req.params.id]);
+    await resolveAdminNotification(conn,'order',req.params.id,'/admin/orders');
+    await conn.commit();
     notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
-    await SMS.orderDelivered(order.phone, order.name||'کاربر', delivery_code);
+    try { await SMS.orderDelivered(order.phone, order.name||'کاربر', delivery_code); }
+    catch(smsError){ console.error('Deliver SMS error:',smsError.message); }
     await notifyOrderStatus(order, 'delivered');
-
-    res.json({ message: 'سفارش تحویل داده شد' });
+    broadcastUserDataChanged('order','status-changed');
+    res.json({ message: 'سفارش تحویل داده شد', status:'delivered' });
   } catch(err) {
+    try{await conn.rollback()}catch(_){}
     res.status(500).json({ message: 'خطای سرور' });
-  }
+  } finally { conn.release(); }
 });
-
 // ── PATCH /api/orders/:id/ship ── (admin) - set shipping info and generate delivery code
 router.patch('/:id/ship', adminAuth, async (req, res) => {
+  const conn=await db.getConnection();
   try {
     const { shipping_method, shipping_tracking, shipping_driver_name, shipping_driver_phone, shipping_vehicle, shipping_plate, shipping_packages } = req.body;
     if (!shipping_method) return res.status(400).json({ message: 'روش ارسال الزامی است' });
-
-    // Generate random 6-digit delivery code only for driver methods
+    await conn.beginTransaction();
+    const [[order]] = await conn.execute(orderForTransitionSql, [req.params.id]);
+    if(!order){ await conn.rollback(); return res.status(404).json({message:'سفارش یافت نشد'}); }
+    const transition=validateOrderTransition(order,'shipping');
+    if(!transition.ok){ await conn.rollback(); return res.status(transition.statusCode).json({message:transitionMessages[transition.code]||'تغییر وضعیت مجاز نیست',code:transition.code}); }
+    if(transition.unchanged){ await conn.commit(); return res.json({message:'سفارش قبلاً وارد مرحله ارسال شده است',status:'shipping',delivery_code:order.delivery_code,unchanged:true}); }
     const needsDeliveryCode = !['post','tipax'].includes(shipping_method);
     const delivery_code = needsDeliveryCode ? Math.floor(100000 + Math.random() * 900000).toString() : null;
-
-    await db.execute(
+    await conn.execute(
       `UPDATE orders SET status='shipping', shipping_method=?, shipping_tracking=?, shipping_driver_name=?, shipping_driver_phone=?, shipping_vehicle=?, shipping_plate=?, shipping_packages=?, delivery_code=? WHERE id=?`,
       [shipping_method, shipping_tracking||'', shipping_driver_name||'', shipping_driver_phone||'', shipping_vehicle||'', shipping_plate||'', shipping_packages||1, delivery_code, req.params.id]
     );
-
-    const [[order]] = await db.execute('SELECT o.*,u.phone,u.name FROM orders o JOIN users u ON o.user_id=u.id WHERE o.id=?', [req.params.id]);
-
-    if(order){
-      try{
-        const packagesCount = shipping_packages || 1;
-        if(shipping_method === 'post' || shipping_method === 'tipax'){
-          await SMS.shippingPost(order.phone, order.name||'کاربر', req.params.id, shipping_tracking||'—', shipping_method);
-        } else {
-          await SMS.shippingDriver(order.phone, order.name||'کاربر', req.params.id, shipping_driver_name, shipping_driver_phone, shipping_vehicle||shipping_method, shipping_plate, packagesCount, delivery_code);
-        }
-      } catch(smsErr){
-        console.error('Ship SMS error:', smsErr.message);
+    await resolveAdminNotification(conn,'order',req.params.id,'/admin/orders');
+    await conn.commit();
+    notifyAdminNotificationsChanged({ entity_type:'order', entity_id:Number(req.params.id), resolved:true });
+    try{
+      const packagesCount = shipping_packages || 1;
+      if(shipping_method === 'post' || shipping_method === 'tipax'){
+        await SMS.shippingPost(order.phone, order.name||'کاربر', req.params.id, shipping_tracking||'—', shipping_method);
+      } else {
+        await SMS.shippingDriver(order.phone, order.name||'کاربر', req.params.id, shipping_driver_name, shipping_driver_phone, shipping_vehicle||shipping_method, shipping_plate, packagesCount, delivery_code);
       }
-      await notifyOrderStatus(order, 'shipping');
-    }
-
-    res.json({ message: 'اطلاعات ارسال ثبت شد', delivery_code });
+    } catch(smsErr){ console.error('Ship SMS error:', smsErr.message); }
+    await notifyOrderStatus(order, 'shipping');
+    broadcastUserDataChanged('order','status-changed');
+    res.json({ message: 'اطلاعات ارسال ثبت شد', status:'shipping', delivery_code });
   } catch (err) {
-    console.error('Ship error:', err.message, err.stack);
-    res.status(500).json({ message: 'خطای سرور', detail: err.message });
-  }
+    try{await conn.rollback()}catch(_){}
+    console.error('Ship error:', err.message);
+    res.status(500).json({ message: 'خطای سرور' });
+  } finally { conn.release(); }
 });
-
 // ── PATCH /api/orders/:id/status ── (admin)
 router.patch('/:id/status', adminAuth, async (req, res) => {
   const conn = await db.getConnection();
   try {
     const { status, clear_shipping } = req.body;
-    const validStatuses = ['pending_expert','pending_customer','pending_payment','preparing','shipping','delivered','cancelled'];
-    if (!validStatuses.includes(status)) return res.status(400).json({ message: 'وضعیت نامعتبر' });
+    if (!VALID_STATUSES.includes(status)) return res.status(400).json({ message: 'وضعیت نامعتبر' });
 
     await conn.beginTransaction();
-    const [[order]] = await conn.execute(
-      `SELECT o.*,u.phone,u.name FROM orders o
-       JOIN users u ON o.user_id=u.id WHERE o.id=? FOR UPDATE`,
-      [req.params.id]
-    );
+    const [[order]] = await conn.execute(orderForTransitionSql, [req.params.id]);
     if (!order) {
       await conn.rollback();
       return res.status(404).json({ message: 'سفارش یافت نشد' });
     }
 
-    const statusChanged = order.status !== status;
+    const transition = validateOrderTransition(order, status);
+    if (!transition.ok) {
+      await conn.rollback();
+      return res.status(transition.statusCode).json({ message: transitionMessages[transition.code] || 'تغییر وضعیت مجاز نیست', code: transition.code });
+    }
+    if (transition.unchanged) {
+      await conn.commit();
+      return res.json({ message:'وضعیت سفارش تغییری نکرد', status, unchanged:true });
+    }
     let debtRemaining = Math.max(0, Number(order.debt_remaining) || 0);
     if (status === 'pending_payment' && order.status !== 'pending_payment' && debtRemaining === 0) {
       debtRemaining = Math.max(0, Number(order.total) || 0);
@@ -368,7 +385,7 @@ router.patch('/:id/status', adminAuth, async (req, res) => {
     const debt = await syncUserDebt(conn, order.user_id);
     await conn.commit();
 
-    if (statusChanged) {
+    {
       try {
         const name = order.name || 'کاربر';
         const id = req.params.id;
@@ -381,6 +398,7 @@ router.patch('/:id/status', adminAuth, async (req, res) => {
         console.error('Order status SMS failed:', smsError.message);
       }
       await notifyOrderStatus(order, status);
+      broadcastUserDataChanged('order', 'status-changed');
     }
 
     res.json({ message: 'وضعیت سفارش و بدهی مشتری به‌روزرسانی شد', status, debt });
@@ -452,10 +470,10 @@ router.put('/:id/items', adminAuth, async (req, res) => {
       const itemDiscount = Number(item.discount) || 0;
       const lineTotal = Math.round(item.quantity * item.price * (1 - itemDiscount / 100));
       subtotal += lineTotal;
-      const [[costRow]]=await conn.execute('SELECT COALESCE((SELECT supplier_price FROM supplier_update_items WHERE product_id=? AND status="approved" ORDER BY id DESC LIMIT 1),?) cost_price',[item.product_id,item.price]);
+      const [[costRow]]=await conn.execute('SELECT p.car,COALESCE((SELECT supplier_price FROM supplier_update_items WHERE product_id=p.id AND status="approved" ORDER BY id DESC LIMIT 1),?) cost_price FROM products p WHERE p.id=?',[item.price,item.product_id]);
       await conn.execute(
-        'INSERT INTO order_items (order_id,product_id,quantity,price,cost_price,discount,total) VALUES (?,?,?,?,?,?,?)',
-        [req.params.id,item.product_id,item.quantity,item.price,costRow.cost_price,itemDiscount,lineTotal]
+        'INSERT INTO order_items (order_id,product_id,car_name,quantity,price,cost_price,discount,total) VALUES (?,?,?,?,?,?,?,?)',
+        [req.params.id,item.product_id,costRow.car||null,item.quantity,item.price,costRow.cost_price,itemDiscount,lineTotal]
       );
     }
 

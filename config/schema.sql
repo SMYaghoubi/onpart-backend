@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   id         INT AUTO_INCREMENT PRIMARY KEY,
   order_id   INT NOT NULL,
   product_id INT NOT NULL,
+  car_name   VARCHAR(100),
   quantity   INT NOT NULL DEFAULT 1,
   price      BIGINT NOT NULL,
   discount   INT DEFAULT 0,
