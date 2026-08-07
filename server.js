@@ -5,6 +5,7 @@ const path       = require('path');
 const rateLimit  = require('express-rate-limit');
 const fs         = require('fs');
 const { rateLimitKey, rateLimitHandler } = require('./lib/rateLimitPolicy');
+const { applyApiNoStore } = require('./lib/apiCachePolicy');
 
 const app = express();
 
@@ -46,6 +47,9 @@ app.use(cors({
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+
+// Dynamic API responses are never reused by browsers, proxies or CDNs.
+app.use('/api', applyApiNoStore);
 
 // ── Rate Limiting (disabled for now) ──
 // Rate limiting
