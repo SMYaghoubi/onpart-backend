@@ -4,11 +4,12 @@ const cors       = require('cors');
 const path       = require('path');
 const rateLimit  = require('express-rate-limit');
 const fs         = require('fs');
+const { rateLimitKey, rateLimitHandler } = require('./lib/rateLimitPolicy');
 
 const app = express();
 
 // ── Trust proxy (required for Liara/reverse proxy) ──
-app.set('trust proxy', 1);
+app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
 // ── Uploads dir ──
 let uploadPath = process.env.UPLOAD_PATH || './uploads';
@@ -55,17 +56,40 @@ const realtimeReadPaths = new Set([
 ]);
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
-  skip: req => req.method === 'GET' && realtimeReadPaths.has(req.path),
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: req => (req.method === 'GET' && realtimeReadPaths.has(req.originalUrl.split('?')[0])) ||
+    /^\/api\/(auth\/(?:send-otp|verify-otp|login|user-login)|supplier-portal\/auth(?:\/|$))/.test(req.originalUrl),
   message: { message: 'تعداد درخواست زیاد است' }
 });
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { message: 'تعداد درخواست زیاد است، لطفاً کمی صبر کنید' } });
+const AUTH_WINDOW = 15 * 60 * 1000;
+const authLimiter = (scope, max, skipSuccessfulRequests = true) => rateLimit({
+  windowMs: AUTH_WINDOW,
+  max,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests,
+  keyGenerator: req => rateLimitKey(scope, req),
+  handler: rateLimitHandler(AUTH_WINDOW)
+});
+const authIpLimiter = (scope, skipSuccessfulRequests = true) => rateLimit({
+  windowMs: AUTH_WINDOW,
+  max: 80,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: req => rateLimitKey(scope + ':ip', req, false),
+  handler: rateLimitHandler(AUTH_WINDOW)
+});
 
-app.use(limiter);
-app.use('/api/auth/send-otp', authLimiter);
-app.use('/api/auth/verify-otp', authLimiter);
-app.use('/api/auth/login', authLimiter);
-app.use('/api/supplier-portal/auth', authLimiter);
+app.use('/api', limiter);
+app.use('/api/auth/login', authIpLimiter('admin'), authLimiter('admin', 12));
+app.use('/api/auth/user-login', authIpLimiter('user'), authLimiter('user', 12));
+app.use('/api/auth/send-otp', authIpLimiter('user-otp-send', false), authLimiter('user-otp-send', 8, false));
+app.use('/api/auth/verify-otp', authIpLimiter('user-otp-verify'), authLimiter('user-otp-verify', 12));
+app.use('/api/supplier-portal/auth/send-otp', authIpLimiter('supplier-otp-send', false), authLimiter('supplier-otp-send', 8, false));
+app.use('/api/supplier-portal/auth/verify-otp', authIpLimiter('supplier-otp-verify'), authLimiter('supplier-otp-verify', 12));
 
 // Security headers
 app.use((req, res, next) => {

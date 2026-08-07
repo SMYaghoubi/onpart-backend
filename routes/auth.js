@@ -83,7 +83,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'اطلاعات ناقص است' });
 
     const [rows] = await db.execute(
-      'SELECT * FROM users WHERE (phone=? OR email=?) AND role="admin"',
+      'SELECT * FROM users WHERE (phone=? OR email=?) AND role IN ("admin","partner")',
       [username, username]
     );
     const user = rows[0];
@@ -109,7 +109,7 @@ router.post('/user-login', async (req, res) => {
       return res.status(400).json({ message: 'اطلاعات ناقص است' });
 
     const [rows] = await db.execute(
-      'SELECT * FROM users WHERE phone=? OR email=?',
+      'SELECT * FROM users WHERE (phone=? OR email=?) AND role="user"',
       [username, username]
     );
     const user = rows[0];

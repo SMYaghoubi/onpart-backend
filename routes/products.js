@@ -1,6 +1,9 @@
 const router = require('express').Router();
 const db     = require('../config/database');
 const { auth, adminAuth } = require('../middleware/auth');
+const { normalizeBulkProductUpdate } = require('../lib/productBulkUpdate');
+const { bulkUpdateProducts } = require('../lib/bulkProductsService');
+const { broadcastUserDataChanged } = require('../lib/userNotifications');
 
 // ── GET /api/products ── (public)
 router.get('/', async (req, res) => {
@@ -45,6 +48,19 @@ router.get('/:id', async (req, res) => {
 });
 
 // ── POST /api/products ── (admin)
+router.patch('/bulk', adminAuth, async (req, res) => {
+  let normalized;
+  try { normalized=normalizeBulkProductUpdate(req.body.ids,req.body.fields); }
+  catch(error){return res.status(400).json({message:error.message})}
+  try {
+    const result=await bulkUpdateProducts(db,normalized);
+    broadcastUserDataChanged('product','bulk-updated');
+    res.json({message:'ویرایش گروهی محصولات انجام شد',...result});
+  } catch(error) {
+    if(!error.status)console.error('Bulk product update error:',error.message);
+    res.status(error.status||500).json({message:error.status?error.message:'خطا در ویرایش گروهی محصولات'});
+  }
+});
 router.post('/', adminAuth, async (req, res) => {
   try {
     const { code, description, car, brand, category, price, stock, min_stock, has_flow, note, supplier_id } = req.body;
