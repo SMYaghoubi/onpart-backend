@@ -7,6 +7,7 @@ const { createNotif } = require('../config/notif');
 const { calculateFinalPrice, validateSupplierValues, isProductInAllowedBrands } = require('../lib/supplierPricing');
 const { buildSupplierChange } = require('../lib/supplierChanges');
 const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
+const { normalizeBrand, brandKey, mapSupplierBrands } = require('../lib/supplierBrands');
 
 const MAX_ROWS = 2000;
 const cleanPhone = value => String(value || '').replace(/\D/g, '');
@@ -162,7 +163,7 @@ router.get('/admin/scope-options', adminAuth, async (req, res) => {
        GROUP BY TRIM(brand)
        ORDER BY TRIM(brand)`
     );
-    res.json({ brands });
+    res.json({ brands:mapSupplierBrands(brands) });
   } catch (err) { res.status(500).json({ message:'خطای سرور' }); }
 });
 
@@ -177,7 +178,7 @@ router.put('/admin/suppliers/:id/scopes', adminAuth, async (req, res) => {
   const conn = await db.getConnection();
   try {
     if (!validId(req.params.id)) return res.status(400).json({ message:'شناسه نامعتبر است' });
-    const brands = [...new Set((Array.isArray(req.body.brands)?req.body.brands:[]).map(v=>String(v).trim()).filter(Boolean))].slice(0,200);
+    let brands = [...new Set((Array.isArray(req.body.brands)?req.body.brands:[]).map(normalizeBrand).filter(Boolean))].slice(0,200);
     const assignedCompany = req.body.assigned_company === true;
     if (brands.length) {
       const placeholders = brands.map(() => '?').join(',');
@@ -186,9 +187,10 @@ router.put('/admin/suppliers/:id/scopes', adminAuth, async (req, res) => {
          WHERE status='active' AND TRIM(brand) IN (${placeholders})`,
         brands
       );
-      const existing = new Set(existingBrands.map(row => row.brand));
-      const invalid = brands.filter(brand => !existing.has(brand));
+      const available = new Map(mapSupplierBrands(existingBrands).map(row => [brandKey(row.brand),row.brand]));
+      const invalid = brands.filter(brand => !available.has(brandKey(brand)));
       if (invalid.length) return res.status(400).json({ message:`برند نامعتبر است: ${invalid.join('، ')}` });
+      brands = [...new Set(brands.map(brand => available.get(brandKey(brand))))];
     }
     await conn.beginTransaction();
     await conn.execute('DELETE FROM supplier_product_scopes WHERE supplier_id=?', [req.params.id]);

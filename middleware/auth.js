@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const db  = require('../config/database');
+const { managementTokenStatus, managementStoredRoleStatus } = require('../lib/managementAccess');
 
 // Simple in-memory cache for user status (5 minute TTL)
 const userCache = new Map();
@@ -38,9 +39,12 @@ const adminAuth = async (req, res, next) => {
   if (!token) return res.status(401).json({ message: 'دسترسی غیرمجاز' });
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const tokenStatus = managementTokenStatus(decoded.role, Boolean(decoded.id));
+    if (tokenStatus === 403) return res.status(403).json({ message: 'مجوز کافی برای مدیریت تأمین‌کنندگان ندارید' });
+    if (tokenStatus === 401) return res.status(401).json({ message: 'نشست مدیریت نامعتبر است' });
     const user = await getUser(decoded.id);
     if (!user) return res.status(401).json({ message: 'حساب کاربری یافت نشد' });
-    if (user.role !== 'admin' && user.role !== 'partner') return res.status(403).json({ message: 'فقط ادمین دسترسی دارد' });
+    if (managementStoredRoleStatus(user.role) !== 200) return res.status(403).json({ message: 'مجوز کافی برای عملیات مدیریتی ندارید' });
     req.user = { ...decoded, role: user.role };
     next();
   } catch(err) {
