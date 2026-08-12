@@ -20,8 +20,10 @@ test('supplier access is limited to explicitly assigned brands', () => {
   assert.equal(isProductInAllowedBrands({ brand: 'Valeo' }, brands), false);
 });
 
-test('supplier price and stock reject negative or non-integer values', () => {
-  assert.deepEqual(validateSupplierValues(120000, 4), { supplierPrice: 120000, stock: 4 });
-  assert.throws(() => validateSupplierValues(-1, 4));
-  assert.throws(() => validateSupplierValues(120000, -1));
+test('supplier price and availability are validated without accepting quantities', () => {
+  assert.deepEqual(validateSupplierValues(120000,true,9),{supplierPrice:120000,stock:9,available:true});
+  assert.deepEqual(validateSupplierValues(120000,false,9),{supplierPrice:120000,stock:0,available:false});
+  assert.deepEqual(validateSupplierValues(120000,true,0),{supplierPrice:120000,stock:1,available:true});
+  assert.throws(() => validateSupplierValues(-1,true,4));
+  assert.throws(() => validateSupplierValues(120000,4,4),/فقط باید/);
 });

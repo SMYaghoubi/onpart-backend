@@ -4,9 +4,10 @@ const { auth, adminAuth } = require('../middleware/auth');
 const { normalizeBulkProductUpdate } = require('../lib/productBulkUpdate');
 const { bulkUpdateProducts } = require('../lib/bulkProductsService');
 const { broadcastUserDataChanged } = require('../lib/userNotifications');
+const { parseAvailability, stockForAvailability } = require('../lib/productAvailability');
 
 // ── GET /api/products ── (public)
-router.get('/', async (req, res) => {
+router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):next(), async (req, res) => {
   try {
     const { search, car, brand, category, page = 1, limit = 50, admin } = req.query;
     const offset = (page - 1) * limit;
@@ -29,7 +30,12 @@ router.get('/', async (req, res) => {
       params
     );
 
-    res.json({ products: rows, total: count[0].total, page: Number(page), limit: Number(limit) });
+    const products=rows.map(row=>{
+      const available=Number(row.stock)>0;
+      if(admin==='1'){const {stock,min_stock,...managementProduct}=row;return {...managementProduct,available}}
+      return {...row,available};
+    });
+    res.json({ products, total: count[0].total, page: Number(page), limit: Number(limit) });
   } catch (err) {
     console.error('Products error:', err.message);
     res.status(500).json({ message: 'خطای سرور', error: err.message });
@@ -63,29 +69,35 @@ router.patch('/bulk', adminAuth, async (req, res) => {
 });
 router.post('/', adminAuth, async (req, res) => {
   try {
-    const { code, description, car, brand, category, price, stock, min_stock, has_flow, note, supplier_id } = req.body;
+    if(Object.prototype.hasOwnProperty.call(req.body,'stock')) return res.status(400).json({message:'ورودی عددی موجودی پشتیبانی نمی‌شود؛ available را با مقدار درست/نادرست ارسال کنید'});
+    const { code, description, car, brand, category, price, available, min_stock, has_flow, note, supplier_id } = req.body;
+    const stock=stockForAvailability(0,parseAvailability(available).available);
     const [result] = await db.execute(
       'INSERT INTO products (code,description,car,brand,category,price,stock,min_stock,has_flow,note,supplier_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [code, description, car, brand, category, price, stock || 0, min_stock || 5, has_flow || 0, note || '', supplier_id || null]
+      [code, description, car, brand, category, price, stock, min_stock || 5, has_flow || 0, note || '', supplier_id || null]
     );
     res.status(201).json({ id: result.insertId, message: 'محصول اضافه شد' });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ message: 'کد محصول تکراری است' });
-    res.status(500).json({ message: 'خطای سرور' });
+    res.status(err.status||500).json({ message: err.status?err.message:'خطای سرور' });
   }
 });
 
 // ── PUT /api/products/:id ── (admin)
 router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const { description, car, brand, category, price, stock, min_stock, has_flow, status, note, supplier_id } = req.body;
+    if(Object.prototype.hasOwnProperty.call(req.body,'stock')) return res.status(400).json({message:'ورودی عددی موجودی پشتیبانی نمی‌شود؛ available را با مقدار درست/نادرست ارسال کنید'});
+    const { description, car, brand, category, price, available, min_stock, has_flow, status, note, supplier_id } = req.body;
+    const [[current]]=await db.execute('SELECT stock,min_stock FROM products WHERE id=?',[req.params.id]);
+    if(!current)return res.status(404).json({message:'محصول یافت نشد'});
+    const stock=stockForAvailability(current.stock,parseAvailability(available).available);
     await db.execute(
       'UPDATE products SET description=?,car=?,brand=?,category=?,price=?,stock=?,min_stock=?,has_flow=?,status=?,note=?,supplier_id=? WHERE id=?',
-      [description, car, brand, category, price, stock, min_stock, has_flow, status, note || '', supplier_id || null, req.params.id]
+      [description, car, brand, category, price, stock, min_stock??current.min_stock, has_flow, status, note || '', supplier_id || null, req.params.id]
     );
     res.json({ message: 'محصول به‌روزرسانی شد' });
   } catch (err) {
-    res.status(500).json({ message: 'خطای سرور' });
+    res.status(err.status||500).json({ message: err.status?err.message:'خطای سرور' });
   }
 });
 
@@ -129,18 +141,22 @@ router.post('/bulk-import', adminAuth, async (req, res) => {
     for (const p of products) {
       try {
         const code = String(p.code).trim();
-        if (!code || !p.description) { failed++; continue; }
-        const [existing] = await db.execute('SELECT id FROM products WHERE TRIM(code)=?', [code]);
+        if (!code || !p.description) { failed++; errors.push(`${code||'بدون کد'}: کد و شرح الزامی است`); continue; }
+        if(Object.prototype.hasOwnProperty.call(p,'stock')) throw new Error('ستون/فیلد موجودی عددی پذیرفته نیست؛ وضعیت موجودی را ارسال کنید');
+        const available=parseAvailability(p.available).available;
+        const [existing] = await db.execute('SELECT id,stock FROM products WHERE TRIM(code)=?', [code]);
         if (existing.length) {
+          const stock=stockForAvailability(existing[0].stock,available);
           await db.execute(
             'UPDATE products SET description=?,car=?,brand=?,category=?,price=?,stock=?,min_stock=?,has_flow=? WHERE id=?',
-            [p.description, p.car||'', p.brand||'', p.category||'', p.price||0, p.stock||0, p.min_stock||5, p.has_flow?1:0, existing[0].id]
+            [p.description, p.car||'', p.brand||'', p.category||'', p.price||0, stock, p.min_stock||5, p.has_flow?1:0, existing[0].id]
           );
           updated++;
         } else {
+          const stock=stockForAvailability(0,available);
           await db.execute(
             'INSERT INTO products (code,description,car,brand,category,price,stock,min_stock,has_flow) VALUES (?,?,?,?,?,?,?,?,?)',
-            [code, p.description, p.car||'', p.brand||'', p.category||'', p.price||0, p.stock||0, p.min_stock||5, p.has_flow?1:0]
+            [code, p.description, p.car||'', p.brand||'', p.category||'', p.price||0, stock, p.min_stock||5, p.has_flow?1:0]
           );
           imported++;
         }

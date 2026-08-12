@@ -16,10 +16,11 @@ router.post('/', async (req, res) => {
     if (!company || !name || !mobile || !city)
       return res.status(400).json({ message: 'اطلاعات ناقص است' });
 
+    const [[linkedUser]]=await db.execute('SELECT u.id FROM users u WHERE TRIM(u.phone)=TRIM(?) AND NOT EXISTS(SELECT 1 FROM suppliers linked WHERE linked.user_id=u.id) LIMIT 1',[mobile]);
     const [result] = await db.execute(
-      `INSERT INTO suppliers (company,type,name,mobile,city,province,address,email,phone,website,reg_number,year,inventory,shipping,description,categories,brands,status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [company,type||'',name,mobile,city,province||'',address||'',email||'',phone||'',website||'',reg_number||'',year||'',inventory||'',shipping||'',description||'',categories||'',brands||'', 'pending']
+      `INSERT INTO suppliers (user_id,company,type,name,mobile,city,province,address,email,phone,website,reg_number,year,inventory,shipping,description,categories,brands,status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [linkedUser?.id||null,company,type||'',name,mobile,city,province||'',address||'',email||'',phone||'',website||'',reg_number||'',year||'',inventory||'',shipping||'',description||'',categories||'',brands||'', 'pending']
     );
 
     const trackId = result.insertId;
@@ -84,7 +85,8 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
   try {
     const [[s]] = await db.execute('SELECT * FROM suppliers WHERE id=?', [req.params.id]);
     if (!s) return res.status(404).json({ message: 'درخواست یافت نشد' });
-    await db.execute('UPDATE suppliers SET status="approved" WHERE id=?', [req.params.id]);
+    const [[linkedUser]]=await db.execute('SELECT u.id FROM users u WHERE TRIM(u.phone)=TRIM(?) AND NOT EXISTS(SELECT 1 FROM suppliers linked WHERE linked.user_id=u.id AND linked.id<>?) LIMIT 1',[s.mobile,req.params.id]);
+    await db.execute('UPDATE suppliers SET status="approved",user_id=COALESCE(user_id,?) WHERE id=?', [linkedUser?.id||null,req.params.id]);
     await SMS.supplierApproved(s.mobile, s.name, req.params.id);
     res.json({ message: 'درخواست تایید شد' });
   } catch (err) {

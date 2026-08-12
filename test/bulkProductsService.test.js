@@ -19,3 +19,18 @@ test('rejects an invalid supplier and rolls back',async()=>{
   const {db,conn}=mockDb({supplier:false});await assert.rejects(()=>bulkUpdateProducts(db,{ids:[1],fields:{supplier_id:999}}),error=>error.status===400);
   assert.ok(conn.calls.includes('rollback'));assert.equal(conn.calls.some(call=>call.sql?.startsWith('UPDATE')),false);
 });
+test('bulk available preserves positive stock and revives zero without a numeric value',async()=>{
+  const {db,conn}=mockDb({products:[{id:1},{id:2}]});
+  await bulkUpdateProducts(db,{ids:[1,2],fields:{available:true}});
+  const update=conn.calls.find(call=>call.sql?.startsWith('UPDATE'));
+  assert.match(update.sql,/stock=CASE WHEN stock>0 THEN stock ELSE 1 END/);
+  assert.deepEqual(update.args,[1,2]);
+});
+test('bulk unavailable clears stock and absent availability leaves stock untouched',async()=>{
+  const first=mockDb({products:[{id:1}],affectedRows:1});
+  await bulkUpdateProducts(first.db,{ids:[1],fields:{available:false}});
+  assert.match(first.conn.calls.find(call=>call.sql?.startsWith('UPDATE')).sql,/stock=0/);
+  const second=mockDb({products:[{id:1}],affectedRows:1});
+  await bulkUpdateProducts(second.db,{ids:[1],fields:{brand:'Bosch'}});
+  assert.doesNotMatch(second.conn.calls.find(call=>call.sql?.startsWith('UPDATE')).sql,/stock=/);
+});

@@ -10,8 +10,11 @@ test('invalid supplier and unsafe product ids are rejected',()=>{
   assert.throws(()=>normalizeBulkProductUpdate([1],{supplier_id:-2}),/تأمین‌کننده/);
   assert.throws(()=>normalizeBulkProductUpdate(['x'],{supplier_id:2}),/شناسه محصول/);
 });
-test('unchecked supplier is untouched because absent fields are not generated',()=>{
-  const normalized=normalizeBulkProductUpdate([1],{stock:8});
-  const query=buildBulkProductUpdate(normalized.fields);
-  assert.deepEqual(query.assignments,['stock=?']);assert.deepEqual(query.values,[8]);assert.equal('supplier_id' in normalized.fields,false);
+test('bulk availability accepts only a boolean and numeric stock is rejected',()=>{
+  const normalized=normalizeBulkProductUpdate([1],{available:true});
+  const query=buildBulkProductUpdate({});
+  assert.deepEqual(normalized.fields,{available:true});
+  assert.deepEqual(query.assignments,[]);
+  assert.throws(()=>normalizeBulkProductUpdate([1],{stock:8}),/قابل ویرایش گروهی نیست/);
+  assert.equal('supplier_id' in normalized.fields,false);
 });

@@ -267,6 +267,7 @@ INSERT IGNORE INTO users (name, phone, password, role, status) VALUES
 -- ── Suppliers ──
 CREATE TABLE IF NOT EXISTS suppliers (
   id          INT AUTO_INCREMENT PRIMARY KEY,
+  user_id     INT NULL,
   company     VARCHAR(200) NOT NULL,
   type        VARCHAR(100),
   name        VARCHAR(200) NOT NULL,
@@ -285,7 +286,9 @@ CREATE TABLE IF NOT EXISTS suppliers (
   categories  TEXT,
   brands      TEXT,
   status      ENUM('pending','reviewed','approved','rejected') DEFAULT 'pending',
-  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_suppliers_user (user_id),
+  CONSTRAINT fk_suppliers_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- ── WebAuthn Credentials ──
