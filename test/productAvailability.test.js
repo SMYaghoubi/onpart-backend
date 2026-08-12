@@ -16,3 +16,9 @@ test('new APIs reject numeric stock while explicit legacy parsing warns and beco
   const legacy=parseAvailability(12,{allowLegacy:true});
   assert.equal(legacy.available,true);assert.equal(legacy.legacy,true);assert.match(legacy.warning,/ذخیره نشد/);
 });
+test('single create/edit availability transitions keep the internal quantity contract',()=>{
+  assert.equal(stockForAvailability(9,false),0,'single edit موجود به ناموجود');
+  assert.equal(stockForAvailability(0,true),1,'single edit ناموجود به موجود');
+  assert.equal(stockForAvailability(9,true),9,'single edit موجود باید تعداد مثبت قبلی را حفظ کند');
+  assert.equal(stockForAvailability(0,true),1,'single create موجود باید sentinel یک بسازد');
+});
