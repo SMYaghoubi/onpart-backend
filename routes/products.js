@@ -5,7 +5,7 @@ const { normalizeBulkProductUpdate } = require('../lib/productBulkUpdate');
 const { bulkUpdateProducts } = require('../lib/bulkProductsService');
 const { broadcastUserDataChanged } = require('../lib/userNotifications');
 const { parseAvailability, stockForAvailability } = require('../lib/productAvailability');
-const { safelyRemoveProduct } = require('../lib/productRemoval');
+const { safelyRemoveProduct, safelyRemoveProducts } = require('../lib/productRemoval');
 
 // ── GET /api/products ── (public)
 router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):next(), async (req, res) => {
@@ -106,17 +106,13 @@ router.put('/:id', adminAuth, async (req, res) => {
 // ── POST /api/products/bulk-delete ── (admin) - delete many products at once
 router.post('/bulk-delete', adminAuth, async (req, res) => {
   try {
-    const { ids } = req.body;
-    if (!Array.isArray(ids) || !ids.length)
-      return res.status(400).json({ message: 'شناسه‌ای ارسال نشده' });
-    const placeholders = ids.map(() => '?').join(',');
-    const [result] = await db.execute(`DELETE FROM products WHERE id IN (${placeholders})`, ids);
-    res.json({ message: 'محصولات حذف شدند', deleted: result.affectedRows });
-  } catch (err) {
-    res.status(500).json({ message: 'خطای سرور' });
+    const result=await safelyRemoveProducts(db,req.body.ids,req.user.id);
+    res.status(result.failed?207:200).json(result);
+  } catch (error) {
+    if(!error.status)console.error('Bulk product removal error:',error.message);
+    res.status(error.status||500).json({message:error.status?error.message:'حذف گروهی امن انجام نشد؛ دوباره تلاش کنید'});
   }
 });
-
 router.delete('/:id', adminAuth, async (req, res) => {
   try {
     const result=await safelyRemoveProduct(db,req.params.id,req.user.id);
