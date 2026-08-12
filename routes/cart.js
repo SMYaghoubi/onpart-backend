@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const db     = require('../config/database');
 const { auth } = require('../middleware/auth');
-const { normalizeCartItem, normalizeCartItems } = require('../lib/cartValidation');
+const { isProductAvailable, normalizeCartItem, normalizeCartItems } = require('../lib/cartValidation');
 
 // ── GET /api/cart ── (get current user's cart with product details)
 router.get('/', auth, async (req, res) => {
@@ -32,18 +32,18 @@ router.put('/', auth, async (req, res) => {
       const ids = items.map(item => item.product_id);
       const placeholders = ids.map(() => '?').join(',');
       const [products] = await conn.execute(
-        `SELECT id, stock FROM products WHERE id IN (${placeholders}) FOR UPDATE`,
+        `SELECT id, stock, status FROM products WHERE id IN (${placeholders}) FOR UPDATE`,
         ids
       );
-      const stockById = new Map(products.map(product => [Number(product.id), Number(product.stock)]));
+      const availabilityById = new Map(products.map(product => [Number(product.id), isProductAvailable(product)]));
       for (const item of items) {
-        if (!stockById.has(item.product_id)) {
+        if (!availabilityById.has(item.product_id)) {
           await conn.rollback();
           return res.status(404).json({ message: 'یکی از محصولات یافت نشد' });
         }
-        if (item.quantity > stockById.get(item.product_id)) {
+        if (!availabilityById.get(item.product_id)) {
           await conn.rollback();
-          return res.status(409).json({ message: 'تعداد یکی از محصولات بیشتر از موجودی است' });
+          return res.status(409).json({ message: 'یکی از محصولات ناموجود است' });
         }
       }
     }
@@ -78,10 +78,10 @@ router.patch('/item', auth, async (req, res) => {
     if (quantity === 0) {
       await db.execute('DELETE FROM cart_items WHERE user_id=? AND product_id=?', [req.user.id, product_id]);
     } else {
-      const [[product]] = await db.execute('SELECT id, stock FROM products WHERE id=?', [product_id]);
+      const [[product]] = await db.execute('SELECT id, stock, status FROM products WHERE id=?', [product_id]);
       if (!product) return res.status(404).json({ message: 'محصول یافت نشد' });
-      if (quantity > Number(product.stock)) {
-        return res.status(409).json({ message: 'تعداد انتخابی بیشتر از موجودی کالا است' });
+      if (!isProductAvailable(product)) {
+        return res.status(409).json({ message: 'این کالا ناموجود است' });
       }
       await db.execute(
         `INSERT INTO cart_items (user_id, product_id, quantity) VALUES (?,?,?)

@@ -5,6 +5,7 @@ const { normalizeBulkProductUpdate } = require('../lib/productBulkUpdate');
 const { bulkUpdateProducts } = require('../lib/bulkProductsService');
 const { broadcastUserDataChanged } = require('../lib/userNotifications');
 const { parseAvailability, stockForAvailability } = require('../lib/productAvailability');
+const { normalizeProductCode, productCodeSqlExpression } = require('../lib/productCode');
 const { safelyRemoveProduct, safelyRemoveProducts } = require('../lib/productRemoval');
 
 // ── GET /api/products ── (public)
@@ -15,7 +16,7 @@ router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):ne
     let where = ['p.status="active"'];
     const params = [];
 
-    if (search) { where.push('(p.description LIKE ? OR p.code LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
+    if (search) { const normalizedCode=normalizeProductCode(search); where.push(`(p.description LIKE ? OR ${productCodeSqlExpression('p.code')} LIKE ?)`); params.push(`%${search}%`, `%${normalizedCode}%`); }
     if (car)      { where.push('p.car=?');      params.push(car); }
     if (brand)    { where.push('p.brand=?');    params.push(brand); }
     if (category) { where.push('p.category=?'); params.push(category); }
@@ -135,10 +136,11 @@ router.post('/bulk-import', adminAuth, async (req, res) => {
     for (const p of products) {
       try {
         const code = String(p.code).trim();
-        if (!code || !p.description) { failed++; errors.push(`${code||'بدون کد'}: کد و شرح الزامی است`); continue; }
+        const normalizedCode=normalizeProductCode(code);
+        if (!normalizedCode || !p.description) { failed++; errors.push(`${code||'بدون کد'}: کد و شرح الزامی است`); continue; }
         if(Object.prototype.hasOwnProperty.call(p,'stock')) throw new Error('ستون/فیلد موجودی عددی پذیرفته نیست؛ وضعیت موجودی را ارسال کنید');
         const available=parseAvailability(p.available).available;
-        const [existing] = await db.execute('SELECT id,stock FROM products WHERE TRIM(code)=?', [code]);
+        const [existing] = await db.execute(`SELECT id,stock FROM products WHERE ${productCodeSqlExpression('code')}=?`, [normalizedCode]);
         if (existing.length) {
           const stock=stockForAvailability(existing[0].stock,available);
           await db.execute(

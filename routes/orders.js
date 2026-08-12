@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db     = require('../config/database');
 const SMS    = require('../config/sms');
 const { auth, adminAuth } = require('../middleware/auth');
+const { normalizeCartItems } = require('../lib/cartValidation');
 const { createNotif } = require('../config/notif');
 const {
   createUserNotification,
@@ -191,8 +192,10 @@ router.post('/manual', adminAuth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
   const conn = await db.getConnection();
   try {
-    const { items } = req.body; // [{product_id, quantity}]
-    if (!items?.length) return res.status(400).json({ message: 'اقلام سفارش خالی است' });
+    const normalizedItems=normalizeCartItems(req.body && req.body.items);
+    if(!normalizedItems.valid)return res.status(400).json({message:normalizedItems.message});
+    const items=normalizedItems.items;
+    if (!items.length) return res.status(400).json({ message: 'اقلام سفارش خالی است' });
 
     await conn.beginTransaction();
 
@@ -201,8 +204,8 @@ router.post('/', auth, async (req, res) => {
 
     for (const item of items) {
       const [[product]] = await conn.execute(
-        'SELECT p.*,COALESCE((SELECT sui.supplier_price FROM supplier_update_items sui WHERE sui.product_id=p.id AND sui.status="approved" ORDER BY sui.id DESC LIMIT 1),p.price) cost_price FROM products p WHERE p.id=? AND p.status="active" AND p.stock>=?',
-        [item.product_id, item.quantity]
+        'SELECT p.*,COALESCE((SELECT sui.supplier_price FROM supplier_update_items sui WHERE sui.product_id=p.id AND sui.status="approved" ORDER BY sui.id DESC LIMIT 1),p.price) cost_price FROM products p WHERE p.id=? AND p.status="active" AND p.stock>0',
+        [item.product_id]
       );
       if (!product) throw new Error(`محصول ${item.product_id} موجود نیست`);
       const itemTotal = product.price * item.quantity;
@@ -221,18 +224,9 @@ router.post('/', auth, async (req, res) => {
         'INSERT INTO order_items (order_id,product_id,car_name,quantity,price,cost_price,total) VALUES (?,?,?,?,?,?,?)',
         [orderId,item.product.id,item.product.car||null,item.quantity,item.price,item.costPrice,item.total]
       );
-      await conn.execute('UPDATE products SET stock=stock-? WHERE id=?', [item.quantity, item.product.id]);
     }
 
     await conn.commit();
-
-    // Check low stock and notify admin
-    for (const item of orderItems) {
-      const [[updated]] = await db.execute('SELECT stock, description FROM products WHERE id=?', [item.product.id]);
-      if (updated && updated.stock <= 5 && updated.stock >= 0) {
-        await SMS.notifyAdmin('notif_low_stock', `موجودی محصول "${updated.description}" کم شد (${updated.stock} عدد باقی‌مانده).`);
-      }
-    }
 
     // Get user info for SMS
     const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [req.user.id]);

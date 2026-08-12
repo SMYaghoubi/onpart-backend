@@ -6,6 +6,7 @@ const { supplierAuth, adminAuth } = require('../middleware/auth');
 const { createNotif } = require('../config/notif');
 const { calculateFinalPrice, validateSupplierValues, isProductInAllowedBrands } = require('../lib/supplierPricing');
 const { buildSupplierChange } = require('../lib/supplierChanges');
+const { normalizeProductCode, productCodeSqlExpression } = require('../lib/productCode');
 const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
 const { normalizeBrand, brandKey, mapSupplierBrands } = require('../lib/supplierBrands');
 
@@ -105,13 +106,15 @@ router.post('/updates', supplierAuth, async (req, res) => {
 
     for (let index=0; index<items.length; index++) {
       const raw = items[index] || {};
-      const code = String(raw.code || '').trim();
+      const originalCode = String(raw.code ?? '').trim();
+      const code=normalizeProductCode(originalCode);
       if (!code) { errors.push('ردیف ' + (index+1) + ': کد محصول نامعتبر است'); continue; }
-      if (seen.has(code)) { errors.push('ردیف ' + (index+1) + ': کد ' + code + ' تکراری است'); continue; }
+      if (seen.has(code)) { errors.push('ردیف ' + (index+1) + ': کد «' + originalCode + '» تکراری است'); continue; }
       seen.add(code);
-      const [[product]] = await conn.execute('SELECT id,code,brand,supplier_id,price,stock FROM products WHERE TRIM(code)=? AND status="active"', [code]);
-      if (!product) { errors.push('ردیف ' + (index+1) + ': محصول ' + code + ' یافت نشد'); continue; }
-      if (!isProductInAllowedBrands(product, brands)) { errors.push('ردیف ' + (index+1) + ': دسترسی محصول ' + code + ' داده نشده است'); continue; }
+      const [matchingProducts] = await conn.execute(`SELECT id,code,brand,supplier_id,price,stock FROM products WHERE ${productCodeSqlExpression('code')}=? AND status="active"`, [code]);
+      if (!matchingProducts.length) { errors.push('ردیف ' + (index+1) + ': محصول با کد «' + originalCode + '» یافت نشد'); continue; }
+      const product=matchingProducts.find(candidate=>isProductInAllowedBrands(candidate,brands));
+      if (!product) { errors.push('ردیف ' + (index+1) + ': کد «' + originalCode + '» خارج از برندهای مجاز شما است'); continue; }
       try {
         if(Object.prototype.hasOwnProperty.call(raw,'stock')) throw new Error('موجودی عددی پذیرفته نیست؛ فقط available را ارسال کنید');
         const change = buildSupplierChange(product, raw.supplier_price, raw.available);
