@@ -270,7 +270,7 @@ router.post('/admin/updates/:id/approve', adminAuth, async (req, res) => {
     await conn.beginTransaction();
     const [[batch]] = await conn.execute('SELECT * FROM supplier_update_batches WHERE id=? FOR UPDATE', [req.params.id]);
     if(!batch||batch.status!=='pending') throw new Error('این بسته قبلاً بررسی شده است');
-    const [items] = await conn.execute('SELECT i.*,p.brand,p.status product_status FROM supplier_update_items i JOIN products p ON p.id=i.product_id WHERE i.batch_id=? FOR UPDATE', [batch.id]);
+    const [items] = await conn.execute(`SELECT i.*,p.brand,p.status product_status FROM supplier_update_items i JOIN products p ON p.id=i.product_id WHERE i.batch_id=? AND i.status='pending' FOR UPDATE`, [batch.id]);
     const [[errorCount]] = await conn.execute('SELECT COUNT(*) count FROM supplier_update_errors WHERE batch_id=?', [batch.id]);
     if (!items.length || Number(errorCount.count)) throw new Error('ابتدا خطاهای فایل را اصلاح و یک بسته جدید ارسال کنید');
     const [scopeRows] = await conn.execute('SELECT scope_value FROM supplier_product_scopes WHERE supplier_id=? AND scope_type="brand"', [batch.supplier_id]);

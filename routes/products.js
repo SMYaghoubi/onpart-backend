@@ -5,6 +5,7 @@ const { normalizeBulkProductUpdate } = require('../lib/productBulkUpdate');
 const { bulkUpdateProducts } = require('../lib/bulkProductsService');
 const { broadcastUserDataChanged } = require('../lib/userNotifications');
 const { parseAvailability, stockForAvailability } = require('../lib/productAvailability');
+const { safelyRemoveProduct } = require('../lib/productRemoval');
 
 // ── GET /api/products ── (public)
 router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):next(), async (req, res) => {
@@ -118,16 +119,13 @@ router.post('/bulk-delete', adminAuth, async (req, res) => {
 
 router.delete('/:id', adminAuth, async (req, res) => {
   try {
-    // Actually delete so code can be reused
-    await db.execute('DELETE FROM products WHERE id=?', [req.params.id]);
-    res.json({ message: 'محصول حذف شد' });
-  } catch (err) {
-    // If has order references, just deactivate
-    await db.execute('UPDATE products SET status="inactive", code=CONCAT(code,"_deleted_",id) WHERE id=?', [req.params.id]);
-    res.json({ message: 'محصول حذف شد' });
+    const result=await safelyRemoveProduct(db,req.params.id,req.user.id);
+    res.json(result);
+  } catch (error) {
+    if(!error.status)console.error('Product removal error:',error.message);
+    res.status(error.status||500).json({message:error.status?error.message:'حذف امن محصول انجام نشد؛ دوباره تلاش کنید'});
   }
 });
-
 // ── POST /api/products/bulk-import ── (admin) - import many products at once
 router.post('/bulk-import', adminAuth, async (req, res) => {
   try {
