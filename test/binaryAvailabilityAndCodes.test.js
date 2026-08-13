@@ -38,6 +38,6 @@ test('supplier lookup is canonical, retains original error code, enforces scope 
 });
 test('admin import and public search use canonical parameterized code matching',()=>{
   const products=read('routes/products.js');
-  assert.match(products,/productCodeSqlExpression\('p\.code'\).*LIKE \?/);assert.match(products,/params\.push\(`%\$\{search\}%`, `%\$\{normalizedCode\}%`\)/);
+  assert.match(products,/productCodeSqlExpression\('p\.code'\).*LIKE \?/);assert.match(products,/params\.push\(`%\$\{normalizedCode\}%`,\.\.\.Array\(3\)\.fill\(`%\$\{normalizedText\}%`\)\)/);
   assert.match(products,/productCodeSqlExpression\('code'\).*\?`/);assert.match(products,/\[normalizedCode\]/);
 });

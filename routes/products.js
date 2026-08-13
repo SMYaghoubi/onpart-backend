@@ -6,6 +6,7 @@ const { bulkUpdateProducts } = require('../lib/bulkProductsService');
 const { broadcastUserDataChanged } = require('../lib/userNotifications');
 const { parseAvailability, stockForAvailability } = require('../lib/productAvailability');
 const { normalizeProductCode, productCodeSqlExpression } = require('../lib/productCode');
+const { normalizeProductText, productTextSqlExpression, mapProductFilterMetadata } = require('../lib/productSearch');
 const { safelyRemoveProduct, safelyRemoveProducts } = require('../lib/productRemoval');
 
 // ── GET /api/products ── (public)
@@ -16,10 +17,14 @@ router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):ne
     let where = ['p.status="active"'];
     const params = [];
 
-    if (search) { const normalizedCode=normalizeProductCode(search); where.push(`(p.description LIKE ? OR ${productCodeSqlExpression('p.code')} LIKE ?)`); params.push(`%${search}%`, `%${normalizedCode}%`); }
-    if (car)      { where.push('p.car=?');      params.push(car); }
-    if (brand)    { where.push('p.brand=?');    params.push(brand); }
-    if (category) { where.push('p.category=?'); params.push(category); }
+    if (search) {
+      const normalizedText=normalizeProductText(search,{compact:true}),normalizedCode=normalizeProductCode(search);
+      where.push(`(${productCodeSqlExpression('p.code')} LIKE ? OR ${productTextSqlExpression('p.description')} LIKE ? OR ${productTextSqlExpression('p.brand')} LIKE ? OR ${productTextSqlExpression('p.category')} LIKE ?)`);
+      params.push(`%${normalizedCode}%`,...Array(3).fill(`%${normalizedText}%`));
+    }
+    if (car)      { where.push(`${productTextSqlExpression('p.car')}=?`);      params.push(normalizeProductText(car,{compact:true})); }
+    if (brand)    { where.push(`${productTextSqlExpression('p.brand')}=?`);    params.push(normalizeProductText(brand,{compact:true})); }
+    if (category) { where.push(`${productTextSqlExpression('p.category')}=?`); params.push(normalizeProductText(category,{compact:true})); }
 
     const sql = admin === '1'
       ? `SELECT p.*, s.company as supplier_name FROM products p LEFT JOIN suppliers s ON p.supplier_id=s.id WHERE ${where.join(' AND ')} ORDER BY p.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`
@@ -44,7 +49,25 @@ router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):ne
   }
 });
 
-// ── GET /api/products/:id ──
+// GET /api/products/metadata - distinct filter values from visible products only.
+router.get('/metadata', async (_req,res)=>{
+  try {
+    const [rows]=await db.execute(`
+      SELECT DISTINCT 'car' type, TRIM(car) value FROM products WHERE status='active' AND car IS NOT NULL AND TRIM(car)<>''
+      UNION ALL
+      SELECT DISTINCT 'brand' type, TRIM(brand) value FROM products WHERE status='active' AND brand IS NOT NULL AND TRIM(brand)<>''
+      UNION ALL
+      SELECT DISTINCT 'category' type, TRIM(category) value FROM products WHERE status='active' AND category IS NOT NULL AND TRIM(category)<>''
+    `);
+    res.set('Cache-Control','no-store, private');
+    res.json(mapProductFilterMetadata(rows));
+  } catch(error) {
+    console.error('Product metadata error:',error.message);
+    res.status(500).json({message:'خطا در دریافت فیلترهای محصولات'});
+  }
+});
+
+// GET /api/products/:id
 router.get('/:id', async (req, res) => {
   try {
     const [rows] = await db.execute('SELECT * FROM products WHERE id=?', [req.params.id]);
