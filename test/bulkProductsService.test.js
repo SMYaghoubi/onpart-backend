@@ -34,3 +34,22 @@ test('bulk unavailable clears stock and absent availability leaves stock untouch
   await bulkUpdateProducts(second.db,{ids:[1],fields:{brand:'Bosch'}});
   assert.doesNotMatch(second.conn.calls.find(call=>call.sql?.startsWith('UPDATE')).sql,/stock=/);
 });
+test('bulk flow writes both 1 and 0 and combines with existing fields',async()=>{
+  const enabled=mockDb({products:[{id:1},{id:2}]});
+  await bulkUpdateProducts(enabled.db,{ids:[1,2],fields:{has_flow:1,brand:'Bosch'}});
+  const enabledUpdate=enabled.conn.calls.find(call=>call.sql?.startsWith('UPDATE'));
+  assert.match(enabledUpdate.sql,/has_flow=\?,brand=\?/);
+  assert.deepEqual(enabledUpdate.args,[1,'Bosch',1,2]);
+
+  const disabled=mockDb({products:[{id:3}],affectedRows:1});
+  await bulkUpdateProducts(disabled.db,{ids:[3],fields:{has_flow:0}});
+  const disabledUpdate=disabled.conn.calls.find(call=>call.sql?.startsWith('UPDATE'));
+  assert.match(disabledUpdate.sql,/has_flow=\?/);
+  assert.deepEqual(disabledUpdate.args,[0,3]);
+});
+
+test('bulk flow is untouched when has_flow was not enabled',async()=>{
+  const unchanged=mockDb({products:[{id:1}],affectedRows:1});
+  await bulkUpdateProducts(unchanged.db,{ids:[1],fields:{brand:'Bosch'}});
+  assert.doesNotMatch(unchanged.conn.calls.find(call=>call.sql?.startsWith('UPDATE')).sql,/has_flow=/);
+});
