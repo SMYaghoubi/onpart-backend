@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS users (
   referrer_id INT,
   created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  last_login_at DATETIME NULL,
+  last_logout_at DATETIME NULL,
   INDEX idx_phone (phone),
   INDEX idx_role  (role),
   INDEX idx_status(status)

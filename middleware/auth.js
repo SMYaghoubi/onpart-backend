@@ -23,6 +23,7 @@ const auth = async (req, res, next) => {
   if (!token) return res.status(401).json({ message: 'توکن ارائه نشده' });
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded.context && decoded.context !== 'shop') return res.status(403).json({ message: '??? ???? ???? ??????? ???? ???? ???' });
     const user = await getUser(decoded.id);
     if (!user) return res.status(401).json({ message: 'حساب کاربری یافت نشد' });
     if (user.status === 'blocked') return res.status(403).json({ message: 'حساب کاربری مسدود شده است' });
@@ -40,6 +41,7 @@ const adminAuth = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const tokenStatus = managementTokenStatus(decoded.role, Boolean(decoded.id));
+    if (decoded.context && decoded.context !== 'management') return res.status(403).json({ message: 'این نشست برای پنل مدیریت صادر نشده است' });
     if (tokenStatus === 403) return res.status(403).json({ message: 'مجوز کافی برای مدیریت تأمین‌کنندگان ندارید' });
     if (tokenStatus === 401) return res.status(401).json({ message: 'نشست مدیریت نامعتبر است' });
     const user = await getUser(decoded.id);

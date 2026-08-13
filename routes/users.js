@@ -130,11 +130,12 @@ router.get('/', adminAuth, async (req, res) => {
 
     if (search) { where.push('(name LIKE ? OR phone LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
     if (status) { where.push('status=?'); params.push(status); }
-    if (role)   { where.push('role=?');   params.push(role); }
+    if (role === 'management') { where.push('role IN ("admin","partner")'); }
+    else if (role) { where.push('role=?'); params.push(role); }
 
     const whereStr = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const [rows] = await db.execute(
-      `SELECT id,name,phone,email,city,state,address,postal_code,province,shop_name,national_code,phone_fixed,id_card_image,shop_image,role,status,credit_limit,debt,created_at FROM users ${whereStr} ORDER BY id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
+      `SELECT id,name,phone,email,city,state,address,postal_code,province,shop_name,national_code,phone_fixed,id_card_image,shop_image,role,status,credit_limit,debt,created_at,last_login_at,last_logout_at FROM users ${whereStr} ORDER BY id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
       params
     );
     await Promise.all(rows.map(async row=>{row.debt=await getCanonicalUserDebt(db,row.id)}));
@@ -165,28 +166,28 @@ router.post('/', adminAuth, async (req, res) => {
 // ── PUT /api/users/:id ── (admin)
 router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const { name, email, role, status, city, address, credit_limit, password } = req.body;
-    if(password){
-      const hashed = await bcrypt.hash(password, 10);
-      await db.execute(
-        'UPDATE users SET name=?,email=?,role=?,status=?,city=?,address=?,credit_limit=?,password=? WHERE id=?',
-        [name||'', email||null, role||'user', status||'active', city||null, address||null, credit_limit||0, hashed, req.params.id]
-      );
-    } else {
-      await db.execute(
-        'UPDATE users SET name=?,email=?,role=?,status=?,city=?,address=?,credit_limit=? WHERE id=?',
-        [name||'', email||null, role||'user', status||'active', city||null, address||null, credit_limit||0, req.params.id]
-      );
+    const allowed=['name','email','role','status','city','address','credit_limit'];
+    const assignments=[],params=[];
+    for(const field of allowed){
+      if(!Object.prototype.hasOwnProperty.call(req.body,field))continue;
+      const value=req.body[field];
+      if(field==='role'&&!['user','partner','admin'].includes(value))return res.status(400).json({message:'نقش کاربر نامعتبر است'});
+      if(field==='status'&&!['active','inactive','blocked','pending'].includes(value))return res.status(400).json({message:'وضعیت کاربر نامعتبر است'});
+      assignments.push(`${field}=?`);params.push(value===''?null:value);
     }
+    if(req.body.password){assignments.push('password=?');params.push(await bcrypt.hash(req.body.password,10));}
+    if(!assignments.length)return res.status(400).json({message:'تغییری برای ذخیره ارسال نشده است'});
+    params.push(req.params.id);
+    const [result]=await db.execute(`UPDATE users SET ${assignments.join(',')} WHERE id=?`,params);
+    if(!result.affectedRows)return res.status(404).json({message:'کاربر یافت نشد'});
     invalidateUserCache(Number(req.params.id));
     broadcastUserDataChanged('profile', 'updated');
     res.json({ message: 'کاربر به‌روزرسانی شد' });
   } catch (err) {
     console.error('PUT user error:', err.message);
-    res.status(500).json({ message: 'خطای سرور', error: err.message });
+    res.status(500).json({ message: 'خطای سرور' });
   }
 });
-
 // ── PATCH /api/users/:id/block ── (admin)
 router.patch('/:id/block', adminAuth, async (req, res) => {
   try {

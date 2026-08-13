@@ -124,48 +124,30 @@ router.delete('/:id', adminAuth, async (req, res) => {
   }
 });
 // ── POST /api/products/bulk-import ── (admin) - import many products at once
-router.post('/bulk-import', adminAuth, async (req, res) => {
-  try {
-    const { products } = req.body;
-    if (!Array.isArray(products) || !products.length)
-      return res.status(400).json({ message: 'داده‌ای برای وارد کردن یافت نشد' });
-
-    let imported = 0, updated = 0, failed = 0;
-    const errors = [];
-
-    for (const p of products) {
-      try {
-        const code = String(p.code).trim();
-        const normalizedCode=normalizeProductCode(code);
-        if (!normalizedCode || !p.description) { failed++; errors.push(`${code||'بدون کد'}: کد و شرح الزامی است`); continue; }
-        if(Object.prototype.hasOwnProperty.call(p,'stock')) throw new Error('ستون/فیلد موجودی عددی پذیرفته نیست؛ وضعیت موجودی را ارسال کنید');
-        const available=parseAvailability(p.available).available;
-        const [existing] = await db.execute(`SELECT id,stock FROM products WHERE ${productCodeSqlExpression('code')}=?`, [normalizedCode]);
-        if (existing.length) {
-          const stock=stockForAvailability(existing[0].stock,available);
-          await db.execute(
-            'UPDATE products SET description=?,car=?,brand=?,category=?,price=?,stock=?,min_stock=?,has_flow=? WHERE id=?',
-            [p.description, p.car||'', p.brand||'', p.category||'', p.price||0, stock, p.min_stock||5, p.has_flow?1:0, existing[0].id]
-          );
-          updated++;
-        } else {
-          const stock=stockForAvailability(0,available);
-          await db.execute(
-            'INSERT INTO products (code,description,car,brand,category,price,stock,min_stock,has_flow) VALUES (?,?,?,?,?,?,?,?,?)',
-            [code, p.description, p.car||'', p.brand||'', p.category||'', p.price||0, stock, p.min_stock||5, p.has_flow?1:0]
-          );
-          imported++;
-        }
-      } catch (e) {
-        failed++;
-        errors.push(`${p.code}: ${e.message}`);
+router.post('/bulk-import', adminAuth, async (req,res)=>{
+  try{
+    const {products}=req.body;if(!Array.isArray(products)||!products.length)return res.status(400).json({message:'داده‌ای برای وارد کردن یافت نشد'});
+    let imported=0,updated=0,failed=0;const errors=[],supplierCache=new Map();
+    for(const product of products){try{
+      const code=String(product.code??'').trim(),normalizedCode=normalizeProductCode(code);if(!normalizedCode||!product.description)throw new Error('کد محصول و شرح محصول الزامی است');
+      if(Object.prototype.hasOwnProperty.call(product,'stock'))throw new Error('موجودی عددی پذیرفته نیست؛ وضعیت موجودی را ارسال کنید');
+      const available=parseAvailability(product.available).available,flowProvided=Object.prototype.hasOwnProperty.call(product,'has_flow');
+      if(flowProvided&&!([0,1,true,false].includes(product.has_flow)))throw new Error('گردش فقط باید «دارد» یا «ندارد» باشد');
+      const supplierProvided=Object.prototype.hasOwnProperty.call(product,'supplier_id');let requestedSupplier=null;
+      if(supplierProvided&&product.supplier_id!==null&&product.supplier_id!==''){
+        requestedSupplier=Number(product.supplier_id);if(!Number.isSafeInteger(requestedSupplier)||requestedSupplier<=0)throw new Error('تأمین‌کننده نامعتبر است');
+        if(!supplierCache.has(requestedSupplier)){const [rows]=await db.execute('SELECT id FROM suppliers WHERE id=? AND status="approved"',[requestedSupplier]);supplierCache.set(requestedSupplier,Boolean(rows.length));}
+        if(!supplierCache.get(requestedSupplier))throw new Error('تأمین‌کننده معتبر و تأییدشده نیست');
       }
-    }
-
-    res.json({ message: 'وارد کردن انجام شد', imported, updated, failed, errors: errors.slice(0,10) });
-  } catch (err) {
-    res.status(500).json({ message: 'خطای سرور' });
-  }
+      const [existing]=await db.execute(`SELECT id,stock,has_flow,supplier_id FROM products WHERE ${productCodeSqlExpression('code')}=?`,[normalizedCode]);
+      if(existing.length){
+        const current=existing[0],stock=stockForAvailability(current.stock,available),flow=flowProvided?(product.has_flow?1:0):Number(current.has_flow||0),supplierId=supplierProvided?requestedSupplier:current.supplier_id;
+        await db.execute('UPDATE products SET description=?,car=?,brand=?,category=?,price=?,stock=?,min_stock=?,has_flow=?,supplier_id=? WHERE id=?',[product.description,product.car||'',product.brand||'',product.category||'',product.price||0,stock,product.min_stock||5,flow,supplierId,current.id]);updated++;
+      }else{
+        const stock=stockForAvailability(0,available);await db.execute('INSERT INTO products (code,description,car,brand,category,price,stock,min_stock,has_flow,supplier_id) VALUES (?,?,?,?,?,?,?,?,?,?)',[code,product.description,product.car||'',product.brand||'',product.category||'',product.price||0,stock,product.min_stock||5,flowProvided?(product.has_flow?1:0):0,supplierProvided?requestedSupplier:null]);imported++;
+      }
+    }catch(error){failed++;errors.push(`${product.code??'بدون کد'}: ${error.message}`)}}
+    res.json({message:'وارد کردن انجام شد',imported,updated,failed,errors:errors.slice(0,10)});
+  }catch(error){res.status(500).json({message:'خطای سرور'});}
 });
-
 module.exports = router;

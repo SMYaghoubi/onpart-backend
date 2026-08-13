@@ -5,14 +5,14 @@ const db      = require('../config/database');
 const SMS     = require('../config/sms');
 const { createNotif } = require('../config/notif');
 
-const sign = async (user) => {
+const sign = async (user, context = 'shop') => {
   let days = process.env.JWT_EXPIRES || '7d';
   try {
     const [rows] = await db.execute('SELECT value FROM settings WHERE `key`="jwt_expires_days"');
     if (rows[0]?.value) days = rows[0].value + 'd';
   } catch (e) {}
   return jwt.sign(
-    { id: user.id, phone: user.phone, role: user.role, name: user.name },
+    { id: user.id, phone: user.phone, role: user.role, name: user.name, context },
     process.env.JWT_SECRET,
     { expiresIn: days }
   );
@@ -69,7 +69,7 @@ router.post('/verify-otp', async (req, res) => {
     if (user.status === 'blocked')
       return res.status(403).json({ message: 'حساب شما مسدود شده است' });
 
-    res.json({ token: await sign(user), user: { id: user.id, name: user.name, phone: user.phone, role: user.role }, isNewUser });
+    res.json({ token: await sign(user, 'shop'), user: { id: user.id, name: user.name, phone: user.phone, role: user.role }, isNewUser });
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
   }
@@ -95,7 +95,11 @@ router.post('/login', async (req, res) => {
     if (user.status === 'blocked')
       return res.status(403).json({ message: 'حساب مسدود شده' });
 
-    res.json({ token: await sign(user), user: { id: user.id, name: user.name, phone: user.phone, role: user.role } });
+    if (user.status !== 'active')
+      return res.status(403).json({ message: 'حساب مدیریت فعال نیست' });
+
+    await db.execute('UPDATE users SET last_login_at=UTC_TIMESTAMP() WHERE id=?', [user.id]);
+    res.json({ token: await sign(user, 'management'), user: { id: user.id, name: user.name, phone: user.phone, role: user.role } });
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
   }
@@ -109,7 +113,7 @@ router.post('/user-login', async (req, res) => {
       return res.status(400).json({ message: 'اطلاعات ناقص است' });
 
     const [rows] = await db.execute(
-      'SELECT * FROM users WHERE (phone=? OR email=?) AND role="user"',
+      'SELECT * FROM users WHERE (phone=? OR email=?) ',
       [username, username]
     );
     const user = rows[0];
@@ -126,20 +130,33 @@ router.post('/user-login', async (req, res) => {
     if (user.status === 'pending')
       return res.status(403).json({ message: 'حساب شما در انتظار تأیید مدیر است' });
 
+    if (user.status !== 'active')
+      return res.status(403).json({ message: 'حساب شما فعال نیست' });
+
     // Send welcome SMS only on first successful login
     if (!user.welcomed) {
       await db.execute('UPDATE users SET welcomed=1 WHERE id=?', [user.id]);
       await SMS.welcome(user.phone, user.name || 'کاربر گرامی');
     }
 
-    res.json({ token: await sign(user), user: { id: user.id, name: user.name, phone: user.phone, role: user.role, city: user.city } });
+    res.json({ token: await sign(user, 'shop'), user: { id: user.id, name: user.name, phone: user.phone, role: user.role, city: user.city } });
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
   }
 });
 
 // ── POST /api/auth/change-password ──
-const { auth } = require('../middleware/auth');
+const { auth, adminAuth } = require('../middleware/auth');
+
+// POST /api/auth/logout (management) - record only an authenticated explicit logout.
+router.post('/logout', adminAuth, async (req,res)=>{
+  try {
+    await db.execute('UPDATE users SET last_logout_at=UTC_TIMESTAMP() WHERE id=?',[req.user.id]);
+    res.json({message:'خروج از پنل ثبت شد'});
+  } catch(err) {
+    res.status(500).json({message:'ثبت خروج انجام نشد؛ نشست شما هنوز پاک نشده است'});
+  }
+});
 router.post('/change-password', auth, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;

@@ -10,7 +10,7 @@ test('admin product APIs accept availability, reject numeric stock and hide inte
   assert.match(products,/const \{stock,min_stock,\.\.\.managementProduct\}=row/);
   assert.match(products,/hasOwnProperty\.call\(req\.body,'stock'\)/);
   assert.match(products,/stockForAvailability\(current\.stock/);
-  assert.match(products,/stockForAvailability\(existing\[0\]\.stock/);
+  assert.match(products,/stockForAvailability\((?:existing\[0\]|current)\.stock/);
 });
 test('supplier submit and review APIs accept availability only and approval preserves positives',()=>{
   assert.match(supplier,/raw\.available/);assert.match(supplier,/req\.body\.available/);

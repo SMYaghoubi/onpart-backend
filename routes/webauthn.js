@@ -92,7 +92,7 @@ router.post('/authenticate', async (req, res) => {
     if (user.status !== 'active') return res.status(403).json({ message: 'حساب شما غیرفعال است' });
     
     const jwt = require('jsonwebtoken');
-    const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign({ id: user.id, role: user.role, context: 'shop' }, process.env.JWT_SECRET, { expiresIn: '30d' });
     
     res.json({ token, user: { id: user.id, name: user.name, phone: user.phone, role: user.role } });
   } catch (err) {
