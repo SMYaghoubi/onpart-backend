@@ -8,6 +8,7 @@ const path    = require('path');
 const fs      = require('fs');
 const { createUserNotification, broadcastUserDataChanged } = require('../lib/userNotifications');
 const { getCanonicalUserDebt } = require('../lib/debtReconciliation');
+const { updateManagedUser } = require('../lib/managedUserUpdate');
 
 const uploadPath = process.env.UPLOAD_PATH || './uploads';
 const storage = multer.diskStorage({
@@ -166,26 +167,13 @@ router.post('/', adminAuth, async (req, res) => {
 // ── PUT /api/users/:id ── (admin)
 router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const allowed=['name','email','role','status','city','address','credit_limit'];
-    const assignments=[],params=[];
-    for(const field of allowed){
-      if(!Object.prototype.hasOwnProperty.call(req.body,field))continue;
-      const value=req.body[field];
-      if(field==='role'&&!['user','partner','admin'].includes(value))return res.status(400).json({message:'نقش کاربر نامعتبر است'});
-      if(field==='status'&&!['active','inactive','blocked','pending'].includes(value))return res.status(400).json({message:'وضعیت کاربر نامعتبر است'});
-      assignments.push(`${field}=?`);params.push(value===''?null:value);
-    }
-    if(req.body.password){assignments.push('password=?');params.push(await bcrypt.hash(req.body.password,10));}
-    if(!assignments.length)return res.status(400).json({message:'تغییری برای ذخیره ارسال نشده است'});
-    params.push(req.params.id);
-    const [result]=await db.execute(`UPDATE users SET ${assignments.join(',')} WHERE id=?`,params);
-    if(!result.affectedRows)return res.status(404).json({message:'کاربر یافت نشد'});
-    invalidateUserCache(Number(req.params.id));
+    const result=await updateManagedUser(db,{actor:req.user,userId:req.params.id,payload:req.body,hashPassword:value=>bcrypt.hash(value,10)});
+    invalidateUserCache(result.id);
     broadcastUserDataChanged('profile', 'updated');
-    res.json({ message: 'کاربر به‌روزرسانی شد' });
+    res.json({ message: 'کاربر به‌روزرسانی شد',role:result.role });
   } catch (err) {
-    console.error('PUT user error:', err.message);
-    res.status(500).json({ message: 'خطای سرور' });
+    if(!err.status)console.error('PUT user error:', err.message);
+    res.status(err.status||500).json({ message:err.status?err.message:'خطای سرور' });
   }
 });
 // ── PATCH /api/users/:id/block ── (admin)

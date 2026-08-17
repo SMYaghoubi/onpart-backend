@@ -11,7 +11,8 @@ test('shop password login accepts every active primary role without changing pas
   assert.match(shop,/bcrypt\.compare\(password, user\.password\)/);
   assert.match(shop,/user\.status !== 'active'/);
   assert.match(shop,/sign\(user, 'shop'\)/);
-  assert.match(users,/if\(req\.body\.password\).*password=\?/s);
+  const managed=read('lib/managedUserUpdate.js');
+  assert.match(managed,/if\(payload\.password\).*password=\?/s);
   const update=users.slice(users.indexOf("router.put('/:id'"),users.indexOf('// ── PATCH /api/users/:id/block'));
   assert.doesNotMatch(update,/role\|\|'user'|status\|\|'active'/);
 });

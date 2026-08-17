@@ -8,6 +8,7 @@ const { parseAvailability, stockForAvailability } = require('../lib/productAvail
 const { normalizeProductCode, productCodeSqlExpression } = require('../lib/productCode');
 const { normalizeProductText, productTextSqlExpression, mapProductFilterMetadata } = require('../lib/productSearch');
 const { safelyRemoveProduct, safelyRemoveProducts } = require('../lib/productRemoval');
+const { executeWithRetry, isTransientDatabaseError } = require('../lib/databaseRetry');
 
 // ── GET /api/products ── (public)
 router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):next(), async (req, res) => {
@@ -30,9 +31,9 @@ router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):ne
       ? `SELECT p.*, s.company as supplier_name FROM products p LEFT JOIN suppliers s ON p.supplier_id=s.id WHERE ${where.join(' AND ')} ORDER BY p.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`
       : `SELECT p.* FROM products p WHERE ${where.join(' AND ')} ORDER BY p.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
 
-    const [rows] = await db.execute(sql, params);
+    const [rows] = await executeWithRetry(db,sql,params);
 
-    const [count] = await db.execute(
+    const [count] = await executeWithRetry(db,
       `SELECT COUNT(*) as total FROM products p WHERE ${where.join(' AND ')}`,
       params
     );
@@ -45,14 +46,14 @@ router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):ne
     res.json({ products, total: count[0].total, page: Number(page), limit: Number(limit) });
   } catch (err) {
     console.error('Products error:', err.message);
-    res.status(500).json({ message: 'خطای سرور', error: err.message });
+    res.status(isTransientDatabaseError(err)?503:500).json({ message: 'دریافت محصولات موقتاً امکان‌پذیر نیست؛ دوباره تلاش کنید', code:'PRODUCTS_UNAVAILABLE' });
   }
 });
 
 // GET /api/products/metadata - distinct filter values from visible products only.
 router.get('/metadata', async (_req,res)=>{
   try {
-    const [rows]=await db.execute(`
+    const [rows]=await executeWithRetry(db,`
       SELECT DISTINCT 'car' type, TRIM(car) value FROM products WHERE status='active' AND car IS NOT NULL AND TRIM(car)<>''
       UNION ALL
       SELECT DISTINCT 'brand' type, TRIM(brand) value FROM products WHERE status='active' AND brand IS NOT NULL AND TRIM(brand)<>''
@@ -63,7 +64,7 @@ router.get('/metadata', async (_req,res)=>{
     res.json(mapProductFilterMetadata(rows));
   } catch(error) {
     console.error('Product metadata error:',error.message);
-    res.status(500).json({message:'خطا در دریافت فیلترهای محصولات'});
+    res.status(isTransientDatabaseError(error)?503:500).json({message:'فیلترهای محصولات موقتاً در دسترس نیستند',code:'PRODUCT_METADATA_UNAVAILABLE'});
   }
 });
 

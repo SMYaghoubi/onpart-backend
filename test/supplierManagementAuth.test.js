@@ -22,7 +22,7 @@ test('adminAuth enforces supplier denial and stored admin or partner role',()=>{
   const source=fs.readFileSync(path.join(__dirname,'..','middleware','auth.js'),'utf8');
   const adminStart=source.indexOf('const adminAuth');
   const tokenDecision=source.indexOf('managementTokenStatus(decoded.role',adminStart);
-  const userLookup=source.indexOf('getUser(decoded.id)',adminStart);
+  const userLookup=source.indexOf('getUser(decoded.id, { fresh: true })',adminStart);
   assert.ok(tokenDecision>adminStart&&tokenDecision<userLookup);
   assert.match(source.slice(adminStart),/managementStoredRoleStatus\(user\.role\)/);
   assert.match(source.slice(adminStart),/res\.status\(403\)/);

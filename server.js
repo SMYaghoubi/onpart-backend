@@ -6,6 +6,8 @@ const rateLimit  = require('express-rate-limit');
 const fs         = require('fs');
 const { rateLimitKey, rateLimitHandler } = require('./lib/rateLimitPolicy');
 const { applyApiNoStore } = require('./lib/apiCachePolicy');
+const db = require('./config/database');
+const { executeWithRetry } = require('./lib/databaseRetry');
 
 const app = express();
 
@@ -133,8 +135,14 @@ app.use('/api/cart',          require('./routes/cart'));
 app.use('/api/bank-cards',    require('./routes/bankCards'));
 app.use('/api/dashboard',     require('./routes/dashboard'));
 // ── Health check ──
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString(), version: '1.0.0' });
+app.get('/health', async (_req, res) => {
+  try {
+    await executeWithRetry(db,'SELECT 1 AS ok',[],{attempts:2,baseDelayMs:80});
+    res.json({ status:'ok',database:'ok',time:new Date().toISOString(),version:'1.0.0' });
+  } catch(error) {
+    console.error('Health database check failed:',error.message);
+    res.status(503).json({status:'degraded',database:'unavailable',time:new Date().toISOString(),version:'1.0.0'});
+  }
 });
 
 // ── 404 ──

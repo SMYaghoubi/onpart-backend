@@ -6,9 +6,9 @@ const { managementTokenStatus, managementStoredRoleStatus } = require('../lib/ma
 const userCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
-async function getUser(id) {
+async function getUser(id, { fresh = false } = {}) {
   const cached = userCache.get(id);
-  if (cached && Date.now() - cached.time < CACHE_TTL) return cached.user;
+  if (!fresh && cached && Date.now() - cached.time < CACHE_TTL) return cached.user;
   const [[user]] = await db.execute('SELECT id,role,status FROM users WHERE id=?', [id]);
   if (user) userCache.set(id, { user, time: Date.now() });
   return user || null;
@@ -44,7 +44,7 @@ const adminAuth = async (req, res, next) => {
     if (decoded.context && decoded.context !== 'management') return res.status(403).json({ message: 'این نشست برای پنل مدیریت صادر نشده است' });
     if (tokenStatus === 403) return res.status(403).json({ message: 'مجوز کافی برای مدیریت تأمین‌کنندگان ندارید' });
     if (tokenStatus === 401) return res.status(401).json({ message: 'نشست مدیریت نامعتبر است' });
-    const user = await getUser(decoded.id);
+    const user = await getUser(decoded.id, { fresh: true });
     if (!user) return res.status(401).json({ message: 'حساب کاربری یافت نشد' });
     if (managementStoredRoleStatus(user.role) !== 200) return res.status(403).json({ message: 'مجوز کافی برای عملیات مدیریتی ندارید' });
     req.user = { ...decoded, role: user.role };
