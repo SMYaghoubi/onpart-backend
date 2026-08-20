@@ -9,6 +9,8 @@ const fs      = require('fs');
 const { createUserNotification, broadcastUserDataChanged } = require('../lib/userNotifications');
 const { getCanonicalUserDebt } = require('../lib/debtReconciliation');
 const { updateManagedUser } = require('../lib/managedUserUpdate');
+const { completeRegistration } = require('../lib/registrationCompletion');
+const { createNotifOnce } = require('../config/notif');
 
 const uploadPath = process.env.UPLOAD_PATH || './uploads';
 const storage = multer.diskStorage({
@@ -61,6 +63,15 @@ router.put('/me', auth, upload.fields([
     const body = req.body || {};
     const { name, email, city, state, address, postal_code, password, currentPassword, isRegistration,
             shop_name, national_code, phone_fixed, province } = body;
+    if(isRegistration===true||isRegistration==='true'){
+      const completed=await completeRegistration(db,{userId:req.user.id,payload:body,hashPassword:value=>bcrypt.hash(value,10)});
+      invalidateUserCache(completed.id);
+      await createNotifOnce('user','کاربر جدید ثبت‌نام کرد',`شماره: ${completed.phone}`,'/admin/users','user',completed.id);
+      if(completed.pending&&completed.completedNow){
+        try{await SMS.accountPending(completed.phone,completed.name||'کاربر')}catch(error){console.error('Registration pending SMS failed:',error.message)}
+      }
+      return res.json({message:completed.pending?'ثبت‌نام شما با موفقیت انجام شد. پس از تأیید مدیر امکان ورود خواهید داشت.':'ثبت‌نام با موفقیت تکمیل شد',pending:completed.pending,user:{id:completed.id}});
+    }
     // اگر کاربر می‌خواهد رمز عبور را تغییر دهد، ابتدا رمز فعلی را تایید کن
     if (password && !isRegistration) {
       if (!currentPassword) {
@@ -103,20 +114,10 @@ router.put('/me', auth, upload.fields([
     params.push(req.user.id);
     await db.execute(sql, params);
 
-    if (isRegistration) {
-      const [[setting]] = await db.execute('SELECT value FROM settings WHERE `key`="manual_approve"');
-      if (setting && setting.value === '1') {
-        await db.execute('UPDATE users SET status="pending" WHERE id=?', [req.user.id]);
-        const [[pendingUser]] = await db.execute('SELECT phone,name FROM users WHERE id=?', [req.user.id]);
-        await SMS.accountPending(pendingUser.phone, pendingUser.name || 'کاربر');
-        return res.json({ message: 'ثبت‌نام شما با موفقیت انجام شد. پس از تأیید مدیر امکان ورود خواهید داشت.', pending: true });
-      }
-    }
-
     res.json({ message: 'پروفایل به‌روزرسانی شد' });
   } catch (err) {
     console.error('PUT /users/me error:', err.message);
-    res.status(500).json({ message: 'خطای سرور', detail: err.message });
+    res.status(err.status||500).json({ message:err.status?err.message:'خطای سرور', detail:err.status?undefined:err.message });
   }
 });
 

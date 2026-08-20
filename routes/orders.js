@@ -14,6 +14,10 @@ const { syncUserDebt } = require('../lib/orderDebt');
 const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
 const { VALID_STATUSES, validateOrderTransition } = require('../lib/orderWorkflow');
 
+function orderReadAuth(req, res, next) {
+  return req.query.admin === '1' ? adminAuth(req, res, next) : auth(req, res, next);
+}
+
 const orderForTransitionSql = `SELECT o.*,u.phone,u.name,
   COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id AND p.status='approved'),0) approved_amount,
   EXISTS(SELECT 1 FROM payments p WHERE p.order_id=o.id AND p.status='approved') has_approved_payment,
@@ -78,7 +82,7 @@ router.get('/my', auth, async (req, res) => {
   }
 });
 
-router.get('/', auth, async (req, res) => {
+router.get('/', orderReadAuth, async (req, res) => {
   try {
     const isAdmin = (req.user.role === 'admin' || req.user.role === 'partner') && req.query.admin === '1';
     const { status, page = 1, limit = 20 } = req.query;
@@ -94,7 +98,7 @@ router.get('/', auth, async (req, res) => {
        (SELECT p.status FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id ORDER BY p.id DESC LIMIT 1) payment_status,
        (SELECT COUNT(*) FROM order_items WHERE order_id=o.id) as items_count
        FROM orders o LEFT JOIN users u ON o.user_id=u.id
-       ${whereStr} ORDER BY o.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
+       ${whereStr} ORDER BY o.created_at DESC,o.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
       params
     );
     res.json(rows);
@@ -114,7 +118,7 @@ router.get('/:id/invoice', adminAuth, async (req, res) => {
     res.json({order,items,settings});
   }catch(err){res.status(500).json({message:'خطا در دریافت اطلاعات فاکتور'})}
 });
-router.get('/:id', auth, async (req, res) => {
+router.get('/:id', orderReadAuth, async (req, res) => {
   try {
     const [orders] = await db.execute(
       `SELECT o.*, u.name as user_name, u.phone as user_phone,u.city user_city,u.address user_address,
@@ -191,6 +195,7 @@ router.post('/manual', adminAuth, async (req, res) => {
 // ── POST /api/orders ──
 router.post('/', auth, async (req, res) => {
   const conn = await db.getConnection();
+  let committed = false;
   try {
     const normalizedItems=normalizeCartItems(req.body && req.body.items);
     if(!normalizedItems.valid)return res.status(400).json({message:normalizedItems.message});
@@ -227,16 +232,26 @@ router.post('/', auth, async (req, res) => {
     }
 
     await conn.commit();
+    committed = true;
 
-    // Get user info for SMS
-    const [[user]] = await db.execute('SELECT * FROM users WHERE id=?', [req.user.id]);
-    await SMS.orderConfirmed(user.phone, user.name || 'کاربر', orderId);
-    await createNotif('order','سفارش جدید #'+orderId,(user.name||user.phone)+' یک سفارش جدید ثبت کرد','/admin/orders','order',orderId);
-    await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست #${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders', 'order_submitted', 'order', orderId);
+    // Post-commit side effects must not turn a saved order into a failed response.
+    let user = null;
+    try { const [userRows] = await db.execute('SELECT * FROM users WHERE id=?', [req.user.id]); user = userRows[0] || null; }
+    catch (sideEffectError) { console.error('Order user lookup failed:', sideEffectError.message); }
+    if (user) {
+      try { await SMS.orderConfirmed(user.phone, user.name || 'کاربر', orderId); }
+      catch (sideEffectError) { console.error('Order confirmation SMS failed:', sideEffectError.message); }
+      try { await createNotif('order','سفارش جدید #'+orderId,(user.name||user.phone)+' یک سفارش جدید ثبت کرد','/admin/orders','order',orderId); }
+      catch (sideEffectError) { console.error('Order admin notification failed:', sideEffectError.message); }
+    }
+    try { await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست #${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders', 'order_submitted', 'order', orderId); }
+    catch (sideEffectError) { console.error('Order user notification failed:', sideEffectError.message); }
 
     res.status(201).json({ id: orderId, total, message: 'سفارش ثبت شد' });
   } catch (err) {
-    await conn.rollback();
+    if (!committed) {
+      try { await conn.rollback(); } catch (_) {}
+    }
     res.status(400).json({ message: err.message || 'خطا در ثبت سفارش' });
   } finally {
     conn.release();

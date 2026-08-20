@@ -3,7 +3,6 @@ const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 const db      = require('../config/database');
 const SMS     = require('../config/sms');
-const { createNotif } = require('../config/notif');
 
 const sign = async (user, context = 'shop') => {
   let days = process.env.JWT_EXPIRES || '7d';
@@ -60,7 +59,6 @@ router.post('/verify-otp', async (req, res) => {
       );
       [rows] = await db.execute('SELECT * FROM users WHERE id=?', [result.insertId]);
       user = rows[0];
-      await createNotif('user', 'کاربر جدید ثبت‌نام کرد', `شماره: ${phone}`, '/admin/users');
     }
 
     if (user.status === 'pending')
