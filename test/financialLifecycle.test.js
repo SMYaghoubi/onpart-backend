@@ -2,11 +2,12 @@ const test=require('node:test');const assert=require('node:assert/strict');const
 const {calculateOrderDebt}=require('../lib/debtReconciliation');
 const ordersSource=fs.readFileSync(require.resolve('../routes/orders'),'utf8');
 const paymentsSource=fs.readFileSync(require.resolve('../routes/payments'),'utf8');
+const paymentListSource=fs.readFileSync(require.resolve('../lib/paymentList'),'utf8');
 
 test('receipt submission is explicitly pending and visible with order/user metadata',()=>{
   assert.match(paymentsSource,/dest_account,status\).*'pending'/s);
-  assert.match(paymentsSource,/o\.status order_status,o\.total order_total,o\.debt_remaining/);
-  assert.match(paymentsSource,/پرداخت ثبت شده – منتظر تأیید/);
+  assert.match(paymentListSource,/o\.status order_status,o\.total order_total,o\.debt_remaining/);
+  assert.match(paymentListSource,/پرداخت ثبت شده – منتظر تأیید/);
 });
 
 test('invoice item edit is silent and emits no SMS or user notification',()=>{

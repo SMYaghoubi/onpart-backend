@@ -21,6 +21,11 @@ const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('.
 const { PAYMENT_SOUND_KEYS, orderStatusAfterPaymentRejection } = require('../lib/paymentStates');
 const { getPaymentAllocations, reconcileOrdersAfterAllocationRemoval } = require('../lib/paymentAllocations');
 const { isAllowedReceiptUpload, canReadReceipt, resolveReceiptPath, receiptMime } = require('../lib/paymentReceipts');
+const { paymentReadMode, buildPaymentListQuery, mapPaymentRows } = require('../lib/paymentList');
+
+function paymentReadAuth(req, res, next) {
+  return paymentReadMode(req.query) === 'management' ? adminAuth(req, res, next) : auth(req, res, next);
+}
 
 // File upload setup
 const storage = multer.diskStorage({
@@ -37,38 +42,19 @@ const upload = multer({
 });
 
 // ── GET /api/payments ──
-router.get('/', auth, async (req, res) => {
+router.get('/', paymentReadAuth, async (req, res) => {
   try {
-    const isAdmin = ['admin','partner'].includes(req.user.role);
-    const { status } = req.query;
-    let where = isAdmin ? [] : ['p.user_id=?'];
-    const params = isAdmin ? [] : [req.user.id];
-    if (status) { where.push('p.status=?'); params.push(status); }
-    const whereStr = where.length ? 'WHERE ' + where.join(' AND ') : '';
-
-    const [rows] = await db.execute(
-      `SELECT p.*, u.name as user_name, u.phone as user_phone,
-        o.status order_status,o.total order_total,o.debt_remaining,
-        COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa WHERE pa.payment_id=p.id),0) allocated_amount,
-        GREATEST(p.amount-COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa WHERE pa.payment_id=p.id),0),0) unallocated_amount,
-        (SELECT GROUP_CONCAT(CONCAT(pa.order_id,':',pa.amount) ORDER BY pa.id) FROM payment_allocations pa WHERE pa.payment_id=p.id) allocation_summary,
-        CASE p.status WHEN 'pending' THEN 'پرداخت ثبت شده – منتظر تأیید'
-          WHEN 'approved' THEN 'پرداخت تأیید شده' WHEN 'rejected' THEN 'پرداخت رد شده' ELSE p.status END status_label
-       FROM payments p
-       LEFT JOIN users u ON p.user_id=u.id
-       LEFT JOIN orders o ON o.id=p.order_id
-       ${whereStr} ORDER BY p.id DESC`,
-      params
-    );
-    rows.forEach(row => { const digits=String(row.src_card || '').replace(/\\D/g,''); row.src_card=digits ? '****-****-****-' + digits.slice(-4) : null; row.allocations=String(row.allocation_summary || '').split(',').filter(Boolean).map(value=>{const [orderId,amount]=value.split(':');return {order_id:Number(orderId),amount:Number(amount)}}); delete row.allocation_summary; row.has_receipt=Boolean(row.receipt_file); row.receipt_type=row.receipt_file ? path.extname(row.receipt_file).slice(1).toLowerCase() : null; delete row.receipt_file; });
-    res.json(rows);
+    const mode=paymentReadMode(req.query);
+    const query=buildPaymentListQuery({mode,userId:req.user.id,status:req.query.status});
+    const [rows]=await db.execute(query.sql,query.params);
+    res.json(mapPaymentRows(rows));
   } catch (err) {
-    res.status(500).json({ message: 'خطای سرور' });
+    console.error('Payment list failed:', err.code || '', err.message);
+    res.status(err.statusCode||500).json({ message:err.statusCode?err.message:'خطا در دریافت فهرست پرداخت‌ها' });
   }
 });
-
 // ── GET /api/payments/:id/receipt ── protected owner/admin receipt stream
-router.get('/:id/receipt', auth, async (req, res) => {
+router.get('/:id/receipt', paymentReadAuth, async (req, res) => {
   try {
     const [[payment]] = await db.execute('SELECT id,user_id,receipt_file FROM payments WHERE id=?', [req.params.id]);
     if (!payment) return res.status(404).json({ message:'پرداخت یافت نشد' });
