@@ -46,7 +46,7 @@ async function notifyOrderStatus(order, status) {
   await createUserNotification(
     order.user_id,
     message[0],
-    `${message[1]} شماره سفارش: #${order.id}`,
+    `${message[1]} شماره سفارش: ${order.id}`,
     message[2],
     '/orders',
     status,
@@ -183,7 +183,7 @@ router.post('/manual', adminAuth, async (req, res) => {
       try { await SMS.orderConfirmed(manualUser.phone, manualUser.name || 'کاربر', orderId); }
       catch (smsError) { console.error('Manual order SMS failed:', smsError.message); }
     }
-    await createUserNotification(finalUserId, 'سفارش جدید برای شما ثبت شد', `سفارش #${orderId} در پنل ثبت شد.`, 'info', '/orders', 'order_submitted', 'order', orderId);
+    await createUserNotification(finalUserId, 'سفارش جدید برای شما ثبت شد', `سفارش ${orderId} در پنل ثبت شد.`, 'info', '/orders', 'order_submitted', 'order', orderId);
 
     res.status(201).json({ id: orderId, message: 'سفارش ثبت شد', user_id: finalUserId });
   } catch (err) {
@@ -241,10 +241,10 @@ router.post('/', auth, async (req, res) => {
     if (user) {
       try { await SMS.orderConfirmed(user.phone, user.name || 'کاربر', orderId); }
       catch (sideEffectError) { console.error('Order confirmation SMS failed:', sideEffectError.message); }
-      try { await createNotif('order','سفارش جدید #'+orderId,(user.name||user.phone)+' یک سفارش جدید ثبت کرد','/admin/orders','order',orderId); }
+      try { await createNotif('order','سفارش جدید '+orderId,(user.name||user.phone)+' یک سفارش جدید ثبت کرد','/admin/orders','order',orderId); }
       catch (sideEffectError) { console.error('Order admin notification failed:', sideEffectError.message); }
     }
-    try { await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست #${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders', 'order_submitted', 'order', orderId); }
+    try { await createUserNotification(req.user.id, 'درخواست شما ثبت شد', `درخواست ${orderId} ثبت شد و منتظر تأیید درخواست باشید.`, 'info', '/orders', 'order_submitted', 'order', orderId); }
     catch (sideEffectError) { console.error('Order user notification failed:', sideEffectError.message); }
 
     res.status(201).json({ id: orderId, total, message: 'سفارش ثبت شد' });
@@ -441,7 +441,7 @@ router.delete('/:id', adminAuth, async (req, res) => {
     try { await SMS.orderRejected(order.phone, order.name || 'کاربر', order.id); }
     catch (smsError) { console.error('Delete order SMS failed:', smsError.message); }
     await createUserNotification(
-      order.user_id, 'سفارش حذف شد', `سفارش #${order.id} توسط مدیریت حذف شد.`,
+      order.user_id, 'سفارش حذف شد', `سفارش ${order.id} توسط مدیریت حذف شد.`,
       'warning', '/orders', 'cancelled', null, null
     );
     res.json({ message: 'سفارش حذف شد و بدهی مشتری اصلاح شد', debt });

@@ -22,6 +22,10 @@ const { PAYMENT_SOUND_KEYS, orderStatusAfterPaymentRejection } = require('../lib
 const { getPaymentAllocations, reconcileOrdersAfterAllocationRemoval } = require('../lib/paymentAllocations');
 const { isAllowedReceiptUpload, canReadReceipt, resolveReceiptPath, receiptMime } = require('../lib/paymentReceipts');
 const { paymentReadMode, buildPaymentListQuery, mapPaymentRows } = require('../lib/paymentList');
+const { publicCard } = require('../lib/bankCards');
+const { positiveInteger, paymentDate, last4, destinationChoices, validateDestination } = require('../lib/manualPayment');
+const { getUploadStorage } = require('../lib/uploadStorage');
+const uploadPath=getUploadStorage().path;
 
 function paymentReadAuth(req, res, next) {
   return paymentReadMode(req.query) === 'management' ? adminAuth(req, res, next) : auth(req, res, next);
@@ -29,7 +33,7 @@ function paymentReadAuth(req, res, next) {
 
 // File upload setup
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, process.env.UPLOAD_PATH || './uploads'),
+  destination: (req, file, cb) => cb(null, uploadPath),
   filename:    (req, file, cb) => cb(null, `receipt_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${path.extname(file.originalname).toLowerCase()}`)
 });
 const upload = multer({
@@ -53,6 +57,86 @@ router.get('/', paymentReadAuth, async (req, res) => {
     res.status(err.statusCode||500).json({ message:err.statusCode?err.message:'خطا در دریافت فهرست پرداخت‌ها' });
   }
 });
+
+router.get('/manual-options', adminAuth, async (req,res)=>{
+  try{
+    const userId=Number(req.query.user_id);
+    if(!Number.isSafeInteger(userId)||userId<=0)return res.status(400).json({message:'مشتری انتخاب‌شده معتبر نیست'});
+    const [[user]]=await db.execute('SELECT id,name,phone,status FROM users WHERE id=?',[userId]);
+    if(!user)return res.status(404).json({message:'مشتری یافت نشد'});
+    if(user.status!=='active')return res.status(409).json({message:'ثبت پرداخت برای مشتری غیرفعال مجاز نیست'});
+    const [orders]=await db.execute(
+      `SELECT o.id,o.total,o.status,o.created_at,
+       GREATEST(COALESCE(o.total,0)-COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments ap ON ap.id=pa.payment_id WHERE pa.order_id=o.id AND ap.status='approved'),0),0) debt_remaining
+       FROM orders o WHERE o.user_id=? AND o.status='pending_payment'
+       ORDER BY o.created_at DESC,o.id DESC`,[userId]
+    );
+    const [cards]=await db.execute('SELECT id,title,bank_code,bank_name,last4,created_at FROM user_bank_cards WHERE user_id=? ORDER BY id DESC LIMIT 20',[userId]);
+    const [[setting]]=await db.execute('SELECT value FROM settings WHERE `key`="bank_accounts"');
+    res.json({user,orders:orders.filter(order=>Number(order.debt_remaining)>0),cards:cards.map(publicCard),destinations:destinationChoices(setting?.value)});
+  }catch(error){
+    console.error('Manual payment options failed:',error.message);
+    res.status(500).json({message:'خطا در دریافت اطلاعات ثبت پرداخت'});
+  }
+});
+
+router.post('/manual', adminAuth, upload.single('file'), async (req,res)=>{
+  let conn=null;
+  let committed=false;
+  try{
+    if(!req.file)throw Object.assign(new Error('تصویر یا PDF فیش الزامی است'),{status:400});
+    conn=await db.getConnection();
+    const userId=positiveInteger(req.body.user_id,'شناسه مشتری');
+    const orderId=positiveInteger(req.body.order_id,'شماره سفارش');
+    const amount=positiveInteger(req.body.amount,'مبلغ');
+    const payDate=paymentDate(req.body.pay_date);
+    const trackNumber=String(req.body.track_number||'').trim().slice(0,100);
+    const description=String(req.body.description??req.body.user_note??'').trim().slice(0,1000)||null;
+    if(!trackNumber)throw Object.assign(new Error('شماره پیگیری الزامی است'),{status:400});
+    await conn.beginTransaction();
+    const [[user]]=await conn.execute('SELECT id,name,phone,status FROM users WHERE id=? FOR UPDATE',[userId]);
+    if(!user)throw Object.assign(new Error('مشتری یافت نشد'),{status:404});
+    if(user.status!=='active')throw Object.assign(new Error('ثبت پرداخت برای مشتری غیرفعال مجاز نیست'),{status:409});
+    const [[order]]=await conn.execute(
+      `SELECT o.id,o.user_id,o.status,o.total,
+       COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments ap ON ap.id=pa.payment_id WHERE pa.order_id=o.id AND ap.status='approved'),0) approved_amount
+       FROM orders o WHERE o.id=? FOR UPDATE`,[orderId]
+    );
+    if(!order)throw Object.assign(new Error('سفارش یافت نشد'),{status:404});
+    if(Number(order.user_id)!==userId)throw Object.assign(new Error('سفارش انتخاب‌شده متعلق به این مشتری نیست'),{status:403});
+    const debt=calculateOrderDebt(order.total,order.approved_amount,order.status);
+    if(order.status!=='pending_payment'||debt<=0)throw Object.assign(new Error('این سفارش بدهی قابل پرداخت ندارد'),{status:409});
+    if(amount>debt)throw Object.assign(new Error('مبلغ پرداخت نمی‌تواند بیشتر از بدهی سفارش باشد'),{status:409});
+
+    let sourceBank='',sourceCardMasked=null,savedCardId=null;
+    if(req.body.saved_card_id){
+      const cardId=positiveInteger(req.body.saved_card_id,'کارت مبدأ');
+      const [[card]]=await conn.execute('SELECT id,bank_name,last4 FROM user_bank_cards WHERE id=? AND user_id=?',[cardId,userId]);
+      if(!card)throw Object.assign(new Error('کارت انتخاب‌شده متعلق به این مشتری نیست'),{status:403});
+      sourceBank=String(card.bank_name||'').trim();sourceCardMasked=`****-****-****-${card.last4}`;savedCardId=card.id;
+    }else{
+      sourceBank=String(req.body.source_bank||'').trim().slice(0,80);
+      if(!sourceBank)throw Object.assign(new Error('بانک مبدأ الزامی است'),{status:400});
+      sourceCardMasked=`****-****-****-${last4(req.body.source_last4)}`;
+    }
+    const [[setting]]=await conn.execute('SELECT value FROM settings WHERE `key`="bank_accounts"');
+    const destination=validateDestination(req.body.dest_account,setting?.value);
+    const [result]=await conn.execute(
+      `INSERT INTO payments
+       (user_id,order_id,amount,bank,track_number,receipt_file,pay_date,src_card,saved_card_id,dest_account,description,submitted_by,submission_source,status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [userId,orderId,amount,sourceBank,trackNumber,req.file.filename,payDate,sourceCardMasked,savedCardId,destination,description,req.user.id,'management','pending']
+    );
+    await conn.commit();committed=true;
+    broadcastUserDataChanged('payment','submitted');
+    res.status(201).json({id:result.insertId,status:'pending',message:'فیش با موفقیت ثبت شد و در انتظار تأیید است'});
+  }catch(error){
+    if(conn&&!committed)try{await conn.rollback()}catch(_){}
+    if(req.file&&!committed)fs.promises.unlink(path.join(uploadPath,req.file.filename)).catch(()=>{});
+    if(!error.status)console.error('Manual payment submission failed:',error.message);
+    res.status(error.status||500).json({message:error.status?error.message:'خطا در ثبت دستی فیش'});
+  }finally{if(conn)conn.release()}
+});
 // ── GET /api/payments/:id/receipt ── protected owner/admin receipt stream
 router.get('/:id/receipt', paymentReadAuth, async (req, res) => {
   try {
@@ -60,7 +144,7 @@ router.get('/:id/receipt', paymentReadAuth, async (req, res) => {
     if (!payment) return res.status(404).json({ message:'پرداخت یافت نشد' });
     if (!canReadReceipt(req.user, payment)) return res.status(403).json({ message:'دسترسی غیرمجاز' });
     if (!payment.receipt_file) return res.status(404).json({ message:'فیشی برای این پرداخت ثبت نشده است' });
-    const resolved = resolveReceiptPath(process.env.UPLOAD_PATH || './uploads', payment.receipt_file);
+    const resolved = resolveReceiptPath(uploadPath, payment.receipt_file);
     const mime = receiptMime(payment.receipt_file);
     if (!resolved || !mime) return res.status(400).json({ message:'مسیر فایل فیش نامعتبر است' });
     try { await fs.promises.access(resolved, fs.constants.R_OK); }
@@ -126,7 +210,7 @@ router.post('/receipt', auth, upload.single('file'), async (req, res) => {
     try { await createUserNotification(
       req.user.id,
       'فیش پرداخت ثبت شد',
-      `فیش پرداخت #${result.insertId} ثبت شد و در انتظار بررسی است.`,
+      `فیش پرداخت ${result.insertId} ثبت شد و در انتظار بررسی است.`,
       'info','/payment',PAYMENT_SOUND_KEYS.submitted,'payment',result.insertId
     ); } catch(error){ console.error('Payment submitted user notification failed:',error.message); }
 

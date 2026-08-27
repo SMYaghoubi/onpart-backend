@@ -3,35 +3,23 @@ const express    = require('express');
 const cors       = require('cors');
 const path       = require('path');
 const rateLimit  = require('express-rate-limit');
-const fs         = require('fs');
 const { rateLimitKey, rateLimitHandler } = require('./lib/rateLimitPolicy');
 const { applyApiNoStore } = require('./lib/apiCachePolicy');
 const db = require('./config/database');
 const { executeWithRetry } = require('./lib/databaseRetry');
+const { getUploadStorage } = require('./lib/uploadStorage');
 
 const app = express();
 
 // ── Trust proxy (required for Liara/reverse proxy) ──
 app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
-// ── Uploads dir ──
-let uploadPath = process.env.UPLOAD_PATH || './uploads';
-try {
-  if (!fs.existsSync(uploadPath)) fs.mkdirSync(uploadPath, { recursive: true });
-  process.env.UPLOAD_PATH = uploadPath;
-} catch (err) {
-  console.error(`Could not create/access upload dir at ${uploadPath}: ${err.message}. File uploads will be disabled until fixed.`);
-  // Try /tmp as last resort (always writable in containers)
-  try {
-    const tmpPath = '/tmp/uploads';
-    if (!fs.existsSync(tmpPath)) fs.mkdirSync(tmpPath, { recursive: true });
-    uploadPath = tmpPath;
-    process.env.UPLOAD_PATH = tmpPath;
-    console.log(`Using fallback upload path: ${tmpPath}`);
-  } catch (err2) {
-    console.error(`Fallback /tmp/uploads also failed: ${err2.message}. Continuing without upload directory.`);
-  }
-}
+// ── Upload storage ──
+// Production startup intentionally fails if persistent storage is not explicitly
+// configured (or an attached /disks/uploads mount is not present and writable).
+const uploadStorage=getUploadStorage();
+const uploadPath=uploadStorage.path;
+console.log(`Upload storage ready (${uploadStorage.source}, ${uploadStorage.persistence})`);
 
 // ── Middleware ──
 const allowedOrigins = [
@@ -138,10 +126,10 @@ app.use('/api/dashboard',     require('./routes/dashboard'));
 app.get('/health', async (_req, res) => {
   try {
     await executeWithRetry(db,'SELECT 1 AS ok',[],{attempts:2,baseDelayMs:80});
-    res.json({ status:'ok',database:'ok',time:new Date().toISOString(),version:'1.0.0' });
+    res.json({status:'ok',database:'ok',storage:{status:'ok',writable:uploadStorage.writable,persistence:uploadStorage.persistence},time:new Date().toISOString(),version:'1.0.0'});
   } catch(error) {
     console.error('Health database check failed:',error.message);
-    res.status(503).json({status:'degraded',database:'unavailable',time:new Date().toISOString(),version:'1.0.0'});
+    res.status(503).json({status:'degraded',database:'unavailable',storage:{status:'ok',writable:uploadStorage.writable,persistence:uploadStorage.persistence},time:new Date().toISOString(),version:'1.0.0'});
   }
 });
 

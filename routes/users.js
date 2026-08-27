@@ -11,8 +11,9 @@ const { getCanonicalUserDebt } = require('../lib/debtReconciliation');
 const { updateManagedUser } = require('../lib/managedUserUpdate');
 const { completeRegistration } = require('../lib/registrationCompletion');
 const { createNotifOnce } = require('../config/notif');
+const { getUploadStorage } = require('../lib/uploadStorage');
 
-const uploadPath = process.env.UPLOAD_PATH || './uploads';
+const uploadPath = getUploadStorage().path;
 const storage = multer.diskStorage({
   destination: (req, file, cb) => { cb(null, uploadPath); },
   filename: (req, file, cb) => { cb(null, `user_${Date.now()}_${Math.random().toString(36).slice(2)}${path.extname(file.originalname).toLowerCase()}`); }

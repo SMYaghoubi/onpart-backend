@@ -5,9 +5,10 @@ const SMS    = require('../config/sms');
 const { createNotif } = require('../config/notif');
 const multer = require('multer');
 const path   = require('path');
+const { getUploadStorage } = require('../lib/uploadStorage');
 const { createUserNotification } = require('../lib/userNotifications');
 
-const uploadPath = process.env.UPLOAD_PATH || './uploads';
+const uploadPath = getUploadStorage().path;
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadPath),
   filename: (req, file, cb) => cb(null, `credit_${Date.now()}_${file.fieldname}${path.extname(file.originalname).toLowerCase()}`)

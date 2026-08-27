@@ -145,7 +145,7 @@ router.post('/updates', supplierAuth, async (req, res) => {
     }
     await conn.commit();
     try {
-      await createNotif('supplier','به‌روزرسانی تأمین‌کننده #'+batchResult.insertId,req.supplier.company+' تعداد '+normalized.length+' تغییر برای بررسی ارسال کرد','/admin/supplier-updates','supplier_batch',batchResult.insertId);
+      await createNotif('supplier','به‌روزرسانی تأمین‌کننده '+batchResult.insertId,req.supplier.company+' تعداد '+normalized.length+' تغییر برای بررسی ارسال کرد','/admin/supplier-updates','supplier_batch',batchResult.insertId);
     } catch (notifError) {
       console.error('Supplier update admin notification failed:', notifError.message);
     }

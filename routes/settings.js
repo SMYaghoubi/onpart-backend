@@ -3,10 +3,12 @@ const db     = require('../config/database');
 const { adminAuth } = require('../middleware/auth');
 const multer = require('multer');
 const { normalizeBankAccountsForStorage, publicBankAccounts } = require('../lib/bankAccountSettings');
+const { getUploadStorage } = require('../lib/uploadStorage');
+const uploadPath=getUploadStorage().path;
 
 const bankLogoUpload = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, process.env.UPLOAD_PATH || './uploads'),
+    destination: (req, file, cb) => cb(null, uploadPath),
     filename: (req, file, cb) => {
       const ext = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' }[file.mimetype] || '.img';
       cb(null, `bank-logo-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
