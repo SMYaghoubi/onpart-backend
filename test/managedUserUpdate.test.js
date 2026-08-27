@@ -21,6 +21,14 @@ test('admin can downgrade partner to user without touching password or related d
   assert.ok(calls.includes('commit'));assert.ok(!calls.includes('rollback'));
 });
 
+test('management edit accepts province and legacy state without dropping city or address',async()=>{
+  const {db,calls}=mockDb();
+  await updateManagedUser(db,{actor:{id:1,role:'admin'},userId:7,payload:{province:'تهران',state:'تهران',city:'تهران',address:'خیابان نمونه'}});
+  const update=calls.find(call=>call.sql&&call.sql.startsWith('UPDATE users SET'));
+  assert.match(update.sql,/province=\?,state=\?,city=\?,address=\?/);
+  assert.deepEqual(update.params,['تهران','تهران','تهران','خیابان نمونه',7]);
+});
+
 test('admin can downgrade another active admin when another active admin remains',async()=>{
   const {db,calls}=mockDb({current:{id:2,role:'admin',status:'active'},activeAdmins:[{id:1},{id:2}]});
   const result=await updateManagedUser(db,{actor:{id:1,role:'admin'},userId:2,payload:{role:'user'}});

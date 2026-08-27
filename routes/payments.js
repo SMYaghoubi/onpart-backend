@@ -78,6 +78,7 @@ router.get('/:id/receipt', paymentReadAuth, async (req, res) => {
 router.post('/receipt', auth, upload.single('file'), async (req, res) => {
   try {
     const { amount, bank, track_number, pay_date, order_id, saved_card_id, dest_account } = req.body;
+    const description=String(req.body.description ?? req.body.user_note ?? '').trim().slice(0,1000)||null;
     const numericAmount=Number(amount);
     if (!Number.isSafeInteger(numericAmount) || numericAmount <= 0)
       return res.status(400).json({ message: 'مبلغ واریزی نامعتبر است' });
@@ -110,8 +111,8 @@ router.post('/receipt', auth, upload.single('file'), async (req, res) => {
     const safePayDate = pay_date && pay_date.trim() ? pay_date : null;
 
     const [result] = await db.execute(
-      'INSERT INTO payments (user_id,order_id,amount,bank,track_number,receipt_file,pay_date,src_card,saved_card_id,dest_account,status) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [req.user.id, order_id || null, numericAmount, sourceBank, track_number, receiptFile, safePayDate, sourceCardMasked, savedCardId, dest_account||null, 'pending']
+      'INSERT INTO payments (user_id,order_id,amount,bank,track_number,receipt_file,pay_date,src_card,saved_card_id,dest_account,description,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      [req.user.id, order_id || null, numericAmount, sourceBank, track_number, receiptFile, safePayDate, sourceCardMasked, savedCardId, dest_account||null, description, 'pending']
     );
 
     // Notify admin and send SMS to customer

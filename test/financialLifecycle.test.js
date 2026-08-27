@@ -5,7 +5,7 @@ const paymentsSource=fs.readFileSync(require.resolve('../routes/payments'),'utf8
 const paymentListSource=fs.readFileSync(require.resolve('../lib/paymentList'),'utf8');
 
 test('receipt submission is explicitly pending and visible with order/user metadata',()=>{
-  assert.match(paymentsSource,/dest_account,status\).*'pending'/s);
+  assert.match(paymentsSource,/dest_account,description,status\).*description, 'pending'/s);
   assert.match(paymentListSource,/o\.status order_status,o\.total order_total,o\.debt_remaining/);
   assert.match(paymentListSource,/پرداخت ثبت شده – منتظر تأیید/);
 });

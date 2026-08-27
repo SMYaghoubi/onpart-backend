@@ -6,7 +6,7 @@ const {buildDashboard}=require('../lib/dashboardService');
 
 const routeSource=fs.readFileSync(require.resolve('../routes/payments'),'utf8');
 const fixture=[
-  {id:27,user_id:8,order_id:41,amount:'900000',status:'pending',bank:'ملت',receipt_file:'receipt_27.png',allocation_summary:null,src_card:null},
+  {id:27,user_id:8,order_id:41,amount:'900000',status:'pending',bank:'ملت',description:'پرداخت بابت سفارش',receipt_file:'receipt_27.png',allocation_summary:null,src_card:null},
   {id:26,user_id:7,order_id:null,amount:'751170',status:'pending',bank:null,receipt_file:null,allocation_summary:null,src_card:null}
 ];
 
@@ -30,6 +30,28 @@ test('management query keeps pending payments with and without orders or optiona
   assert.equal(rows[1].bank,null);
   assert.equal(rows[1].has_receipt,false);
   assert.equal(rows[0].has_receipt,true);
+  assert.equal(rows[0].description,'پرداخت بابت سفارش');
+  assert.equal(rows[1].description,null);
+});
+
+test('receipt submission persists a bounded customer description separately from finance note',()=>{
+  assert.match(routeSource,/req\.body\.description \?\? req\.body\.user_note/);
+  assert.match(routeSource,/dest_account,description,status/);
+  assert.match(routeSource,/description, 'pending'/);
+  assert.match(buildPaymentListQuery({mode:'management'}).sql,/SELECT p\.\*/);
+});
+
+test('payment description migration is idempotent',()=>{
+  const migration=fs.readFileSync(require.resolve('../migrations/019_add_payment_description.sql'),'utf8');
+  assert.match(migration,/information_schema\.COLUMNS/i);
+  assert.match(migration,/COLUMN_NAME = 'description'/);
+  assert.match(migration,/IF\([\s\S]*ALTER TABLE payments ADD COLUMN description/);
+});
+
+test('order-related SMS log text does not prefix order numbers with hash',()=>{
+  const sms=fs.readFileSync(require.resolve('../config/sms'),'utf8');
+  assert.doesNotMatch(sms,/(ثبت|تایید|رد|آماده‌سازی|ارسال(?: پستی)?) (?:فیش )?سفارش #\$\{orderId/);
+  assert.match(sms,/ORDER_NUMBER', value: String\(orderId\)/);
 });
 
 test('shop list stays isolated and status filter is parameterized and validated',()=>{

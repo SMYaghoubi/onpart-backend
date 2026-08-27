@@ -120,7 +120,7 @@ const SMS = {
     return this.sendVerify(phone, 294288, [
       { name: 'FULLNAME', value: name || 'کاربر' },
       { name: 'ORDER_NUMBER', value: String(orderId) }
-    ], `ثبت سفارش #${orderId}`);
+    ], `ثبت سفارش ${orderId}`);
   },
 
   // ── تایید سفارش توسط کارشناس ─ template: 957019
@@ -128,7 +128,7 @@ const SMS = {
     return this.sendVerify(phone, 957019, [
       { name: 'FULLNAME', value: name || 'کاربر' },
       { name: 'ORDER_NUMBER', value: String(orderId) }
-    ], `تایید سفارش #${orderId}`);
+    ], `تایید سفارش ${orderId}`);
   },
 
   // ── رد سفارش ─ template: 327126
@@ -136,7 +136,7 @@ const SMS = {
     return this.sendVerify(phone, 327126, [
       { name: 'FULLNAME', value: name || 'کاربر' },
       { name: 'ORDER_NUMBER', value: String(orderId) }
-    ], `رد سفارش #${orderId}`);
+    ], `رد سفارش ${orderId}`);
   },
 
   // ── آماده‌سازی سفارش ─ template: 635083
@@ -144,7 +144,7 @@ const SMS = {
     return this.sendVerify(phone, 635083, [
       { name: 'FULLNAME', value: name || 'کاربر' },
       { name: 'ORDER_NUMBER', value: String(orderId) }
-    ], `آماده‌سازی سفارش #${orderId}`);
+    ], `آماده‌سازی سفارش ${orderId}`);
   },
 
   // ── ثبت فیش بانکی ─ template: 309930
@@ -152,7 +152,7 @@ const SMS = {
     return this.sendVerify(phone, 309930, [
       { name: 'FULLNAME', value: name || 'کاربر' },
       { name: 'ORDER_NUMBER', value: String(orderId || '—') }
-    ], `ثبت فیش سفارش #${orderId}`);
+    ], `ثبت فیش سفارش ${orderId || '—'}`);
   },
 
   // ── تایید فیش بانکی ─ template: 803626
@@ -160,7 +160,7 @@ const SMS = {
     return this.sendVerify(phone, 803626, [
       { name: 'FULLNAME', value: name || 'کاربر' },
       { name: 'ORDER_NUMBER', value: String(orderId || '—') }
-    ], `تایید فیش سفارش #${orderId}`);
+    ], `تایید فیش سفارش ${orderId || '—'}`);
   },
 
   // ── رد فیش بانکی ─ template: 461020
@@ -168,7 +168,7 @@ const SMS = {
     return this.sendVerify(phone, 461020, [
       { name: 'FULLNAME', value: name || 'کاربر' },
       { name: 'ORDER_NUMBER', value: String(orderId || '—') }
-    ], `رد فیش سفارش #${orderId}`);
+    ], `رد فیش سفارش ${orderId || '—'}`);
   },
 
   // ── ثبت درخواست تامین‌کننده ─ template: 757239
@@ -220,7 +220,7 @@ const SMS = {
       { name: 'PELAK',        value: plate || '—' },
       { name: 'ITEMS_COUNT',  value: String(itemsCount || 1) },
       { name: 'TOKEN',        value: String(deliveryCode) }
-    ], `ارسال سفارش #${orderId}`);
+    ], `ارسال سفارش ${orderId}`);
   },
 
   // ── ارسال با پست/تیپاکس ─ template: 866653
@@ -231,7 +231,7 @@ const SMS = {
       { name: 'ORDER_NUMBER',  value: String(orderId) },
       { name: 'SHIPPING_CODE', value: trackingCode || '—' },
       { name: 'TITLE',         value: methodFa }
-    ], `ارسال پستی سفارش #${orderId}`);
+    ], `ارسال پستی سفارش ${orderId}`);
   },
 
 
