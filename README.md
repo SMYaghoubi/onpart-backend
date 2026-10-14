@@ -45,3 +45,13 @@ In production the server fails fast when `UPLOAD_PATH` is missing or not writabl
 
 ## Bank-card encryption
 Set `CARD_ENCRYPTION_KEY` to a long random production secret. Card numbers are encrypted with AES-256-GCM and API responses expose only masked values/last4. Keep the key stable across deployments. For local backward compatibility only, `JWT_SECRET` is used when this variable is absent; production should always use a separate key.
+
+## Visitor statistics and access hardening
+
+`/api/visitors/heartbeat` records a storefront page view and updates presence. Browser identifiers are hashed, page names are allowlisted, and no IP addresses, query strings, or form contents are saved. Multiple tabs share one browser identifier. Presence expires after 75 seconds without a visible-page heartbeat. Daily totals use Tehran midnight; history is retained for 35 days. `/api/visitors/summary` is management-only. Counts start at deployment, not retrospectively.
+
+Migration `021_create_site_visits.sql` is idempotent. The visitors service also applies this single additive table migration on its first request. A database role without CREATE permission must have the migration applied before enabling analytics; a failure is reported as unavailable statistics and does not block orders.
+
+Legacy biometric registration/authentication endpoints return 410 until a complete signed-assertion verifier is provided. Password and OTP authentication continue unchanged. Existing credential rows are preserved. Invoice listing defaults to the signed-in customer's own orders; management listing requires `?admin=1` and an active management session.
+
+Credit approval locks the request and updates the balance in one transaction. A repeated approval is a no-op, and approved requests cannot be rejected or deleted. Approval amounts must be positive integers no greater than the requested amount. Notifications are best-effort after commit.
