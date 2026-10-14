@@ -8,6 +8,8 @@ const path   = require('path');
 const { getUploadStorage } = require('../lib/uploadStorage');
 const { createUserNotification } = require('../lib/userNotifications');
 
+const { positiveAmount, reviewCredit } = require('../lib/creditReview');
+
 const uploadPath = getUploadStorage().path;
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadPath),
@@ -49,6 +51,8 @@ router.post('/', auth, upload.fields([
     if (!amount || !guarantee_type)
       return res.status(400).json({ message: 'اطلاعات ناقص است' });
 
+    const requestedAmount=positiveAmount(amount);
+    if(!['cheque','promissory','guarantor','property'].includes(guarantee_type)) return res.status(400).json({message:'نوع ضمانت معتبر نیست'});
     const id_card_file   = req.files?.id_card_file?.[0]?.filename || null;
     const guarantee_file = req.files?.guarantee_file?.[0]?.filename || null;
     const job_file       = req.files?.job_file?.[0]?.filename || null;
@@ -58,7 +62,7 @@ router.post('/', auth, upload.fields([
       `INSERT INTO credit_requests 
        (user_id,amount,guarantee_type,guarantee_detail,full_name,mobile,national_code,job,province,city,address,id_card_file,guarantee_file,job_file,other_file)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [req.user.id, amount, guarantee_type, guarantee_detail||'',
+      [req.user.id, requestedAmount, guarantee_type, guarantee_detail||'',
        full_name||'', mobile||'', national_code||'', job||'',
        province||'', city||'', address||'',
        id_card_file, guarantee_file, job_file, other_file]
@@ -68,64 +72,32 @@ router.post('/', auth, upload.fields([
     await createNotif('credit', 'درخواست اعتبار جدید', `از ${full_name||'کاربر'} به مبلغ ${Number(amount).toLocaleString()} تومان`, '/admin/credit');
   } catch (err) {
     console.error('Credit POST error:', err.message);
-    res.status(500).json({ message: 'خطای سرور' });
+    res.status(err.status||500).json({ message: err.status?err.message:'خطای سرور' });
   }
 });
 
-// ── PATCH /api/credit/:id/approve ── (admin)
-router.patch('/:id/approve', adminAuth, async (req, res) => {
+// Review is atomic and repeated approval never grants credit twice.
+for(const action of ['approve','reject']){
+  router.patch('/:id/'+action,adminAuth,async(req,res)=>{
+    let result;
+    try {
+      result=await reviewCredit(db,{id:req.params.id,actorId:req.user.id,action,amount:req.body?.approved_amount,note:req.body?.note});
+    } catch(error){return res.status(error.status||500).json({message:error.status?error.message:'خطا در بررسی درخواست اعتبار'});}
+    res.json({message:result.changed?(action==='approve'?'اعتبار تأیید و اعطا شد':'درخواست رد شد'):'این درخواست قبلاً بررسی شده است',already_reviewed:!result.changed});
+    if(!result.changed)return;
+    const request=result.request;
+    try {
+      const [[user]]=await db.execute('SELECT phone,name FROM users WHERE id=?',[request.user_id]);
+      const message=action==='approve'?`درخواست اعتبار شما به مبلغ ${Number(request.approved_amount).toLocaleString()} تومان تأیید شد.`:'درخواست اعتبار شما رد شد.';
+      await createUserNotification(request.user_id,action==='approve'?'درخواست اعتبار تأیید شد':'درخواست اعتبار رد شد',message,action==='approve'?'success':'warning','/profile',null,'credit',request.id);
+      if(user)await SMS.send(user.phone,message+' آن‌پارت');
+    } catch(error){console.error('Credit review notification failed:',error.message);}
+  });
+}
+router.delete('/:id',adminAuth,async(req,res)=>{
   try {
-    const { approved_amount } = req.body;
-    const [[request]] = await db.execute('SELECT * FROM credit_requests WHERE id=?', [req.params.id]);
-    if (!request) return res.status(404).json({ message: 'درخواست یافت نشد' });
-
-    const finalAmount = approved_amount || request.amount;
-    await db.execute(
-      'UPDATE credit_requests SET status="approved", approved_amount=?, reviewed_by=?, reviewed_at=NOW() WHERE id=?',
-      [finalAmount, req.user.id, req.params.id]
-    );
-    await db.execute('UPDATE users SET credit_limit=credit_limit+? WHERE id=?', [finalAmount, request.user_id]);
-
-    const [[user]] = await db.execute('SELECT phone, name FROM users WHERE id=?', [request.user_id]);
-    if (user) await SMS.send(user.phone, `درخواست اعتبار شما به مبلغ ${finalAmount.toLocaleString()} تومان تأیید شد. آن‌پارت`);
-    await createUserNotification(request.user_id, 'درخواست اعتبار تأیید شد', `اعتبار شما به مبلغ ${Number(finalAmount).toLocaleString()} تومان افزایش یافت.`, 'success', '/profile', null, 'credit', request.id);
-
-    res.json({ message: 'درخواست تأیید شد' });
-  } catch (err) {
-    res.status(500).json({ message: 'خطای سرور' });
-  }
+    await reviewCredit(db,{id:req.params.id,actorId:req.user.id,action:'delete'});
+    res.json({message:'درخواست حذف شد'});
+  } catch(error){res.status(error.status||500).json({message:error.status?error.message:'خطا در حذف درخواست'});}
 });
-
-// ── PATCH /api/credit/:id/reject ── (admin)
-router.patch('/:id/reject', adminAuth, async (req, res) => {
-  try {
-    const { note } = req.body;
-    const [[request]] = await db.execute('SELECT * FROM credit_requests WHERE id=?', [req.params.id]);
-    if (!request) return res.status(404).json({ message: 'درخواست یافت نشد' });
-
-    await db.execute(
-      'UPDATE credit_requests SET status="rejected", note=?, reviewed_by=?, reviewed_at=NOW() WHERE id=?',
-      [note || '', req.user.id, req.params.id]
-    );
-
-    const [[user]] = await db.execute('SELECT phone FROM users WHERE id=?', [request.user_id]);
-    if (user) await SMS.send(user.phone, `متأسفانه درخواست اعتبار شما رد شد. آن‌پارت`);
-    await createUserNotification(request.user_id, 'درخواست اعتبار رد شد', note || 'درخواست اعتبار شما توسط مدیریت تأیید نشد.', 'warning', '/profile', null, 'credit', request.id);
-
-    res.json({ message: 'درخواست رد شد' });
-  } catch (err) {
-    res.status(500).json({ message: 'خطای سرور' });
-  }
-});
-
-// ── DELETE /api/credit/:id ── (admin)
-router.delete('/:id', adminAuth, async (req, res) => {
-  try {
-    await db.execute('DELETE FROM credit_requests WHERE id=?', [req.params.id]);
-    res.json({ message: 'درخواست حذف شد' });
-  } catch (err) {
-    res.status(500).json({ message: 'خطای سرور' });
-  }
-});
-
-module.exports = router;
+module.exports=router;
