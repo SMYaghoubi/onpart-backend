@@ -53,7 +53,7 @@ const limiter = rateLimit({
   max: 600,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: req => (req.method === 'GET' && realtimeReadPaths.has(req.originalUrl.split('?')[0])) ||
+  skip: req => req.originalUrl.split('?')[0] === '/api/visitors/heartbeat' || (req.method === 'GET' && realtimeReadPaths.has(req.originalUrl.split('?')[0])) ||
     /^\/api\/(auth\/(?:send-otp|verify-otp|login|user-login)|supplier-portal\/auth(?:\/|$))/.test(req.originalUrl),
   message: { message: 'تعداد درخواست زیاد است' }
 });
@@ -121,6 +121,7 @@ app.use('/api/supplier-portal', require('./routes/supplierPortal'));
 app.use('/api/webauthn',      require('./routes/webauthn'));
 app.use('/api/cart',          require('./routes/cart'));
 app.use('/api/bank-cards',    require('./routes/bankCards'));
+app.use('/api/visitors', require('./routes/visitors'));
 app.use('/api/dashboard',     require('./routes/dashboard'));
 // ── Health check ──
 app.get('/health', async (_req, res) => {
