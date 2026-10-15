@@ -47,6 +47,7 @@ const adminAuth = async (req, res, next) => {
     const user = await getUser(decoded.id, { fresh: true });
     if (!user) return res.status(401).json({ message: 'حساب کاربری یافت نشد' });
     if (managementStoredRoleStatus(user.role) !== 200) return res.status(403).json({ message: 'مجوز کافی برای عملیات مدیریتی ندارید' });
+    if (user.status !== 'active') return res.status(403).json({ message: 'حساب مدیریت فعال نیست' });
     req.user = { ...decoded, role: user.role };
     next();
   } catch(err) {
