@@ -4,6 +4,7 @@ const { adminAuth } = require('../middleware/auth');
 const multer = require('multer');
 const { normalizeBankAccountsForStorage, publicBankAccounts } = require('../lib/bankAccountSettings');
 const { getUploadStorage } = require('../lib/uploadStorage');
+const { SETTING_PREFIX } = require('../lib/shopFilters');
 const uploadPath=getUploadStorage().path;
 
 const bankLogoUpload = multer({
@@ -71,6 +72,9 @@ router.post('/bank-logo', adminAuth, bankLogoUpload.single('logo'), (req, res) =
 router.put('/', adminAuth, async (req, res) => {
   try {
     const settings = req.body;
+    if (Object.keys(settings).some(key => key.toLowerCase().startsWith(SETTING_PREFIX))) {
+      return res.status(400).json({ message: 'برای ویرایش فیلترها از بخش مدیریت فیلترهای فروشگاه استفاده کنید' });
+    }
     for (const [key, value] of Object.entries(settings)) {
       const storedValue=key==='bank_accounts'
         ? JSON.stringify(normalizeBankAccountsForStorage(value))

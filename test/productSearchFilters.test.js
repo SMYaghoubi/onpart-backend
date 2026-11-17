@@ -3,6 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const {normalizeProductText,mapProductFilterMetadata}=require('../lib/productSearch');
+const {buildShopFilters,filterSettingKey,parseFilterRule}=require('../lib/shopFilters');
 const route=fs.readFileSync(path.join(__dirname,'..','routes/products.js'),'utf8');
 
 test('Persian product text normalization handles digits, Arabic letters, spacing and dashes',()=>{
@@ -41,4 +42,24 @@ test('metadata endpoint reads only active products and disables response caching
   assert.match(metadataRoute,/status='active'/);
   assert.match(metadataRoute,/SELECT DISTINCT 'car'.+UNION ALL.+SELECT DISTINCT 'brand'.+UNION ALL.+SELECT DISTINCT 'category'/s);
   assert.match(metadataRoute,/Cache-Control','no-store, private'/);
+});
+
+test('shop settings can rename, hide and add filter options while preserving original product matches',()=>{
+  const catalog={cars:['پژو ۲۰۶','پژو ۴۰۵'],brands:['ایساکو'],categories:['تسمه']};
+  const rules=[
+    {group:'cars',source:'پژو 206',label:'۲۰۶',hidden:false},
+    {group:'cars',source:'پژو ۴۰۵',label:'پژو ۴۰۵',hidden:true},
+    {group:'categories',source:'لنت ترمز',label:'لنت ترمز',hidden:false}
+  ];
+  const settings=rules.map(rule=>({key:filterSettingKey(rule),value:JSON.stringify(rule)}));
+  settings.push({key:settings[0].key,value:'invalid JSON'});
+  assert.deepEqual(buildShopFilters(catalog,[],false),catalog);
+  const visible=buildShopFilters(catalog,settings,false);
+  assert.deepEqual(visible.cars,['پژو 206']);
+  assert.deepEqual(visible.labels.cars,{'پژو 206':'۲۰۶'});
+  assert.deepEqual(visible.categories,['تسمه','لنت ترمز']);
+  assert.deepEqual(buildShopFilters(catalog,settings,true).cars,rules.slice(0,2).map(({group,...rule})=>rule));
+  assert.equal(filterSettingKey(rules[0]),filterSettingKey({...rules[0],source:' پژو‌۲۰۶ '}));
+  assert.equal(parseFilterRule({...rules[0],hidden:'false'}),null);
+  assert.equal(parseFilterRule({...rules[0],group:'__proto__'}),null);
 });
