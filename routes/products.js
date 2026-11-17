@@ -9,6 +9,7 @@ const { normalizeProductCode, productCodeSqlExpression } = require('../lib/produ
 const { normalizeProductText, productTextSqlExpression, mapProductFilterMetadata } = require('../lib/productSearch');
 const { safelyRemoveProduct, safelyRemoveProducts } = require('../lib/productRemoval');
 const { executeWithRetry, isTransientDatabaseError } = require('../lib/databaseRetry');
+const { SETTING_PREFIX, buildShopFilters, filterSettingKey, parseFilterRule } = require('../lib/shopFilters');
 
 // ── GET /api/products ── (public)
 router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):next(), async (req, res) => {
@@ -50,21 +51,39 @@ router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):ne
   }
 });
 
-// GET /api/products/metadata - distinct filter values from visible products only.
-router.get('/metadata', async (_req,res)=>{
+// GET /api/products/metadata - active product values with shop filter settings applied.
+router.get('/metadata', (req, res, next) => req.query.admin === '1' ? adminAuth(req, res, next) : next(), async (req,res)=>{
+  res.set('Cache-Control','no-store, private');
   try {
-    const [rows]=await executeWithRetry(db,`
+    const [[rows], [settings]] = await Promise.all([
+      executeWithRetry(db,`
       SELECT DISTINCT 'car' type, TRIM(car) value FROM products WHERE status='active' AND car IS NOT NULL AND TRIM(car)<>''
       UNION ALL
       SELECT DISTINCT 'brand' type, TRIM(brand) value FROM products WHERE status='active' AND brand IS NOT NULL AND TRIM(brand)<>''
       UNION ALL
       SELECT DISTINCT 'category' type, TRIM(category) value FROM products WHERE status='active' AND category IS NOT NULL AND TRIM(category)<>''
-    `);
-    res.set('Cache-Control','no-store, private');
-    res.json(mapProductFilterMetadata(rows));
+      `),
+      executeWithRetry(db, 'SELECT \`key\`, value FROM settings WHERE \`key\` LIKE ?', [SETTING_PREFIX + '%'])
+    ]);
+    res.json(buildShopFilters(mapProductFilterMetadata(rows), settings, req.query.admin === '1'));
   } catch(error) {
     console.error('Product metadata error:',error.message);
     res.status(isTransientDatabaseError(error)?503:500).json({message:'فیلترهای محصولات موقتاً در دسترس نیستند',code:'PRODUCT_METADATA_UNAVAILABLE'});
+  }
+});
+
+router.put('/metadata', adminAuth, async (req, res) => {
+  const rule = parseFilterRule(req.body);
+  if (!rule) return res.status(400).json({ message: 'نام و وضعیت گزینهٔ فیلتر را بررسی کنید' });
+  try {
+    await db.execute(
+      'INSERT INTO settings (\`key\`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value=VALUES(value)',
+      [filterSettingKey(rule), JSON.stringify(rule)]
+    );
+    res.json(rule);
+  } catch (error) {
+    console.error('Shop filter save error:', error.message);
+    res.status(500).json({ message: 'ذخیرهٔ گزینهٔ فیلتر انجام نشد' });
   }
 });
 
