@@ -12,8 +12,9 @@ test('admin product APIs accept availability, reject numeric stock and hide inte
   assert.match(products,/stockForAvailability\(current\.stock/);
   assert.match(products,/stockForAvailability\((?:existing\[0\]|current)\.stock/);
 });
-test('supplier submit and review APIs accept availability only and approval preserves positives',()=>{
-  assert.match(supplier,/raw\.available/);assert.match(supplier,/req\.body\.available/);
+test('supplier quantity is stored separately and shop availability stays binary',()=>{
+  assert.match(supplier,/proposedInventory\(raw, product\)/);assert.match(supplier,/req\.body\.available/);
+  assert.match(supplier,/supplier_update_quantities/);
   assert.match(supplier,/proposed_available/);assert.match(supplier,/previous_available/);
   assert.match(supplier,/stock=CASE WHEN stock>0 THEN stock ELSE 1 END/);
   assert.match(supplier,/hasOwnProperty\.call\(raw,'stock'\)/);

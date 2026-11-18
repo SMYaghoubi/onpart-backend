@@ -8,8 +8,11 @@ const { applyApiNoStore } = require('./lib/apiCachePolicy');
 const db = require('./config/database');
 const { executeWithRetry } = require('./lib/databaseRetry');
 const { getUploadStorage } = require('./lib/uploadStorage');
+const { supplierInventorySchema } = require('./lib/supplierInventory');
 
 const app = express();
+const ensureSupplierInventory = supplierInventorySchema(db);
+ensureSupplierInventory().catch(error => console.error('Supplier inventory initialization:', error.message));
 
 // ── Trust proxy (required for Liara/reverse proxy) ──
 app.set('trust proxy', 'loopback, linklocal, uniquelocal');
@@ -126,7 +129,7 @@ app.use('/api/dashboard',     require('./routes/dashboard'));
 app.get('/health', async (_req, res) => {
   try {
     await executeWithRetry(db,'SELECT 1 AS ok',[],{attempts:2,baseDelayMs:80});
-    res.json({status:'ok',database:'ok',storage:{status:'ok',writable:uploadStorage.writable,persistence:uploadStorage.persistence},time:new Date().toISOString(),version:'1.0.0'});
+    res.json({status:'ok',database:'ok',supplier_inventory:ensureSupplierInventory.status(),storage:{status:'ok',writable:uploadStorage.writable,persistence:uploadStorage.persistence},time:new Date().toISOString(),version:'1.0.0'});
   } catch(error) {
     console.error('Health database check failed:',error.message);
     res.status(503).json({status:'degraded',database:'unavailable',storage:{status:'ok',writable:uploadStorage.writable,persistence:uploadStorage.persistence},time:new Date().toISOString(),version:'1.0.0'});
