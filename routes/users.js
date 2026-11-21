@@ -1,7 +1,7 @@
 const router  = require('express').Router();
 const bcrypt  = require('bcryptjs');
 const db      = require('../config/database');
-const { auth, adminAuth, invalidateUserCache } = require('../middleware/auth');
+const { auth, registrationAuth, adminAuth, invalidateUserCache } = require('../middleware/auth');
 const SMS     = require('../config/sms');
 const multer  = require('multer');
 const path    = require('path');
@@ -55,7 +55,7 @@ router.get('/:id', auth, async (req, res) => {
 });
 
 // ── PUT /api/users/me ──
-router.put('/me', auth, upload.fields([
+router.put('/me', registrationAuth, upload.fields([
   { name: 'id_card_image', maxCount: 1 },
   { name: 'shop_image', maxCount: 1 }
 ]), async (req, res) => {
@@ -64,6 +64,9 @@ router.put('/me', auth, upload.fields([
     const body = req.body || {};
     const { name, email, city, state, address, postal_code, password, currentPassword, isRegistration,
             shop_name, national_code, phone_fixed, province } = body;
+    if (req.user.context === 'registration' && isRegistration !== true && isRegistration !== 'true' && Object.keys(body).length) {
+      return res.status(403).json({ message: 'این نشست فقط برای تکمیل ثبت‌نام و مدارک آن است' });
+    }
     if(isRegistration===true||isRegistration==='true'){
       const completed=await completeRegistration(db,{userId:req.user.id,payload:body,hashPassword:value=>bcrypt.hash(value,10)});
       invalidateUserCache(completed.id);
@@ -74,7 +77,7 @@ router.put('/me', auth, upload.fields([
       return res.json({message:completed.pending?'ثبت‌نام شما با موفقیت انجام شد. پس از تأیید مدیر امکان ورود خواهید داشت.':'ثبت‌نام با موفقیت تکمیل شد',pending:completed.pending,user:{id:completed.id}});
     }
     // اگر کاربر می‌خواهد رمز عبور را تغییر دهد، ابتدا رمز فعلی را تایید کن
-    if (password && !isRegistration) {
+    if (password) {
       if (!currentPassword) {
         return res.status(400).json({ message: 'رمز عبور فعلی الزامی است' });
       }

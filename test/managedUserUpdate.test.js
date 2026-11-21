@@ -53,6 +53,6 @@ test('route invalidates the changed user so a stale management token is fresh-ch
   const auth=fs.readFileSync(path.join(__dirname,'..','middleware/auth.js'),'utf8');
   assert.match(users,/updateManagedUser\([\s\S]*invalidateUserCache\(result\.id\)/);
   assert.match(auth,/adminAuth[\s\S]*getUser\(decoded\.id, \{ fresh: true \}\)/);
-  assert.match(auth,/const user = await getUser\(decoded\.id\)/);
+  assert.match(auth,/const user = await getUser\(decoded\.id, \{ fresh: true \}\)/);
   assert.match(auth,/managementStoredRoleStatus\(user\.role\) !== 200/);
 });

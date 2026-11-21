@@ -9,6 +9,7 @@ const db = require('./config/database');
 const { executeWithRetry } = require('./lib/databaseRetry');
 const { getUploadStorage } = require('./lib/uploadStorage');
 const { supplierInventorySchema } = require('./lib/supplierInventory');
+const { isPrivateUploadPath } = require('./lib/privateDocuments');
 
 const app = express();
 const ensureSupplierInventory = supplierInventorySchema(db);
@@ -101,7 +102,7 @@ app.use((req, res, next) => {
 
 // ── Static uploads ──
 app.use('/uploads', (req,res,next) => {
-  if (/^\/receipt_/i.test(req.path)) return res.status(404).json({ message:'مسیر عمومی فایل فیش غیرفعال است' });
+  if (isPrivateUploadPath(req.path)) return res.status(404).json({ message:'این فایل فقط از مسیر احرازشده قابل دریافت است' });
   next();
 }, express.static(uploadPath));
 
@@ -124,6 +125,7 @@ app.use('/api/supplier-portal', require('./routes/supplierPortal'));
 app.use('/api/webauthn',      require('./routes/webauthn'));
 app.use('/api/cart',          require('./routes/cart'));
 app.use('/api/bank-cards',    require('./routes/bankCards'));
+app.use('/api/documents',     require('./routes/documents'));
 app.use('/api/dashboard',     require('./routes/dashboard'));
 // ── Health check ──
 app.get('/health', async (_req, res) => {

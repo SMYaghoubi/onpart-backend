@@ -9,6 +9,7 @@ const { supplierInventorySchema, parseSupplierPrice, parseQuantity, proposedInve
 const { normalizeProductCode, productCodeSqlExpression } = require('../lib/productCode');
 const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
 const { normalizeBrand, brandKey, mapSupplierBrands } = require('../lib/supplierBrands');
+const { normalizeSupplierPhone, supplierPhoneSql } = require('../lib/supplierRegistration');
 
 const MAX_ROWS = 2000;
 const ensureInventorySchema = supplierInventorySchema(db);
@@ -16,13 +17,14 @@ async function inventoryReady(_req, res, next) {
   try { await ensureInventorySchema(); next(); }
   catch (error) { console.error('Supplier inventory schema:', error.message); res.status(503).json({ message:'موجودی تأمین‌کنندگان موقتاً در دسترس نیست' }); }
 }
-const cleanPhone = value => String(value || '').replace(/\D/g, '');
+const cleanPhone = normalizeSupplierPhone;
 const validId = value => Number.isInteger(Number(value)) && Number(value) > 0;
 
 async function getSupplierByPhone(phone) {
   const [rows] = await db.execute(
     `SELECT id,company,name,mobile,status,portal_enabled
-     FROM suppliers WHERE mobile=? ORDER BY id DESC LIMIT 1`, [phone]
+     FROM suppliers WHERE ${supplierPhoneSql}=?
+     ORDER BY (status='approved' AND portal_enabled=1) DESC,(status='approved') DESC,id DESC LIMIT 1`, [phone]
   );
   return rows[0] || null;
 }

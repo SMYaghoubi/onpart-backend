@@ -18,6 +18,15 @@ function orderReadAuth(req, res, next) {
   return req.query.admin === '1' ? adminAuth(req, res, next) : auth(req, res, next);
 }
 
+const supplierPurchasePriceSql = `COALESCE(
+  (SELECT inv.supplier_price FROM supplier_inventory inv
+   WHERE inv.product_id=p.id AND inv.supplier_id=p.supplier_id),
+  (SELECT item.supplier_price FROM supplier_update_items item
+   JOIN supplier_update_batches batch ON batch.id=item.batch_id
+   WHERE item.product_id=p.id AND batch.supplier_id=p.supplier_id AND item.status='approved'
+   ORDER BY item.id DESC LIMIT 1)
+)`;
+
 const orderForTransitionSql = `SELECT o.*,u.phone,u.name,
   COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.order_id=o.id AND p.status='approved'),0) approved_amount,
   EXISTS(SELECT 1 FROM payments p WHERE p.order_id=o.id AND p.status='approved') has_approved_payment,
@@ -209,7 +218,8 @@ router.post('/', auth, async (req, res) => {
 
     for (const item of items) {
       const [[product]] = await conn.execute(
-        'SELECT p.*,COALESCE((SELECT sui.supplier_price FROM supplier_update_items sui WHERE sui.product_id=p.id AND sui.status="approved" ORDER BY sui.id DESC LIMIT 1),p.price) cost_price FROM products p WHERE p.id=? AND p.status="active" AND p.stock>0',
+        `SELECT p.*,COALESCE(${supplierPurchasePriceSql},p.price) cost_price
+         FROM products p WHERE p.id=? AND p.status="active" AND p.stock>0`,
         [item.product_id]
       );
       if (!product) throw new Error(`محصول ${item.product_id} موجود نیست`);
@@ -472,6 +482,11 @@ router.put('/:id/items', adminAuth, async (req, res) => {
       return res.status(404).json({ message:'سفارش یافت نشد' });
     }
 
+    if (!['pending_expert', 'pending_customer'].includes(order.status)) {
+      await conn.rollback();
+      return res.status(409).json({ message: 'اقلام فاکتور پس از تأیید مشتری قابل ویرایش نیستند' });
+    }
+
     await conn.execute('DELETE FROM order_items WHERE order_id=?', [req.params.id]);
 
     let subtotal = 0;
@@ -479,7 +494,7 @@ router.put('/:id/items', adminAuth, async (req, res) => {
       const itemDiscount = Number(item.discount) || 0;
       const lineTotal = Math.round(item.quantity * item.price * (1 - itemDiscount / 100));
       subtotal += lineTotal;
-      const [[costRow]]=await conn.execute('SELECT p.car,COALESCE((SELECT supplier_price FROM supplier_update_items WHERE product_id=p.id AND status="approved" ORDER BY id DESC LIMIT 1),?) cost_price FROM products p WHERE p.id=?',[item.price,item.product_id]);
+      const [[costRow]]=await conn.execute(`SELECT p.car,COALESCE(${supplierPurchasePriceSql},?) cost_price FROM products p WHERE p.id=?`,[item.price,item.product_id]);
       await conn.execute(
         'INSERT INTO order_items (order_id,product_id,car_name,quantity,price,cost_price,discount,total) VALUES (?,?,?,?,?,?,?,?)',
         [req.params.id,item.product_id,costRow.car||null,item.quantity,item.price,costRow.cost_price,itemDiscount,lineTotal]

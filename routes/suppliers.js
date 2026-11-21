@@ -3,6 +3,7 @@ const db     = require('../config/database');
 const { adminAuth } = require('../middleware/auth');
 const { createNotif } = require('../config/notif');
 const SMS    = require('../config/sms');
+const { registerSupplier } = require('../lib/supplierRegistration');
 
 // ── POST /api/suppliers ── (public form OR admin manual add)
 router.post('/', async (req, res) => {
@@ -16,26 +17,22 @@ router.post('/', async (req, res) => {
     if (!company || !name || !mobile || !city)
       return res.status(400).json({ message: 'اطلاعات ناقص است' });
 
-    const [[linkedUser]]=await db.execute('SELECT u.id FROM users u WHERE TRIM(u.phone)=TRIM(?) AND NOT EXISTS(SELECT 1 FROM suppliers linked WHERE linked.user_id=u.id) LIMIT 1',[mobile]);
-    const [result] = await db.execute(
-      `INSERT INTO suppliers (user_id,company,type,name,mobile,city,province,address,email,phone,website,reg_number,year,inventory,shipping,description,categories,brands,status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [linkedUser?.id||null,company,type||'',name,mobile,city,province||'',address||'',email||'',phone||'',website||'',reg_number||'',year||'',inventory||'',shipping||'',description||'',categories||'',brands||'', 'pending']
-    );
-
-    const trackId = result.insertId;
+    const registered = await registerSupplier(db, req.body);
+    const trackId = registered.id;
 
     // Only send registration SMS for public form submissions (not admin manual add)
     const isAdminAdd = req.headers.authorization;
     if (!isAdminAdd) {
-      await SMS.supplierRegistered(mobile, name, trackId);
+      try { await SMS.supplierRegistered(registered.mobile, name, trackId); }
+      catch (error) { console.error('Supplier registration SMS failed:', error.message); }
     }
-    await createNotif('supplier', 'درخواست همکاری جدید', `${company} — ${name} — ${mobile}`, '/admin/partners');
+    try { await createNotif('supplier', 'درخواست همکاری جدید', `${company} — ${name} — ${registered.mobile}`, '/admin/partners'); }
+    catch (error) { console.error('Supplier registration notification failed:', error.message); }
 
     res.status(201).json({ id: trackId, message: 'درخواست همکاری ثبت شد' });
   } catch (err) {
     console.error('Supplier POST error:', err.message);
-    res.status(500).json({ message: 'خطای سرور' });
+    res.status(err.status || 500).json({ message: err.status ? err.message : 'خطای سرور' });
   }
 });
 

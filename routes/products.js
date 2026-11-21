@@ -11,6 +11,9 @@ const { safelyRemoveProduct, safelyRemoveProducts } = require('../lib/productRem
 const { executeWithRetry, isTransientDatabaseError } = require('../lib/databaseRetry');
 const { SETTING_PREFIX, buildShopFilters, filterSettingKey, parseFilterRule } = require('../lib/shopFilters');
 
+router.use((req, res, next) => req.query.admin === '1' || req.method !== 'GET'
+  ? adminAuth(req, res, next) : auth(req, res, next));
+
 // ── GET /api/products ── (public)
 router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):next(), async (req, res) => {
   try {
