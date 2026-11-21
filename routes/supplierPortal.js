@@ -80,7 +80,13 @@ router.get('/products', supplierAuth, inventoryReady, async (req, res) => {
       'SELECT scope_value FROM supplier_product_scopes WHERE supplier_id=? AND scope_type="brand" ORDER BY scope_value',
       [req.supplier.id]
     );
-    res.json({ products: rows, brands: scopes.map(row => row.scope_value.trim()) });
+    const [pendingProducts] = await db.execute(
+      `SELECT n.id,n.batch_id,n.code,n.description,n.brand,n.supplier_price,n.quantity,n.available
+       FROM supplier_new_product_requests n JOIN supplier_update_batches b ON b.id=n.batch_id
+       WHERE b.supplier_id=? AND b.status='pending' ORDER BY n.id DESC`,
+      [req.supplier.id]
+    );
+    res.json({ products: rows, pending_products: pendingProducts, brands: scopes.map(row => row.scope_value.trim()) });
   } catch (err) {
     res.status(500).json({ message: 'خطا در دریافت محصولات مجاز' });
   }
