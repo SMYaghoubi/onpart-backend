@@ -37,7 +37,7 @@ router.get('/', async (req, res) => {
       min_order: settings.min_order,
       tax_rate: settings.tax_rate,
       currency: settings.currency,
-      show_price_guest: settings.show_price_guest,
+      show_price_guest: '0',
       online_order: settings.online_order,
       show_stock: settings.show_stock,
       maintenance_mode: settings.maintenance_mode,
@@ -72,6 +72,12 @@ router.post('/bank-logo', adminAuth, bankLogoUpload.single('logo'), (req, res) =
 router.put('/', adminAuth, async (req, res) => {
   try {
     const settings = req.body;
+    if (settings.manual_approve != null && String(settings.manual_approve) !== '1') {
+      return res.status(400).json({ message: 'تأیید مدیریت برای کاربران جدید الزامی است' });
+    }
+    if (settings.show_price_guest != null && String(settings.show_price_guest) !== '0') {
+      return res.status(400).json({ message: 'نمایش قیمت فقط برای کاربران تأییدشده مجاز است' });
+    }
     if (Object.keys(settings).some(key => key.toLowerCase().startsWith(SETTING_PREFIX))) {
       return res.status(400).json({ message: 'برای ویرایش فیلترها از بخش مدیریت فیلترهای فروشگاه استفاده کنید' });
     }

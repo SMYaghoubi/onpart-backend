@@ -5,11 +5,18 @@ const { auth, adminAuth } = require('../middleware/auth');
 const { syncUserDebt } = require('../lib/orderDebt');
 const { deleteUserNotificationsForEntity, broadcastUserNotificationsChanged } = require('../lib/userNotifications');
 
+function invoiceReadAuth(req, res, next) {
+  return req.query.admin === '1' ? adminAuth(req, res, next) : auth(req, res, next);
+}
+
 // GET /api/invoices
-router.get('/', auth, async (req, res) => {
+router.get('/', invoiceReadAuth, async (req, res) => {
   try {
     const { limit = 50, page = 1 } = req.query;
     const offset = (page - 1) * limit;
+    const isManagement = req.query.admin === '1';
+    const ownerFilter = isManagement ? '' : 'AND o.user_id=?';
+    const params = isManagement ? [] : [req.user.id];
     const [rows] = await db.execute(
       `SELECT o.id, o.total, o.status, o.created_at,
         u.name as user_name, u.phone as user_phone,
@@ -17,10 +24,10 @@ router.get('/', auth, async (req, res) => {
        FROM orders o
        LEFT JOIN users u ON o.user_id = u.id
        LEFT JOIN order_items oi ON o.id = oi.order_id
-       WHERE o.status != 'cancelled'
+       WHERE o.status != 'cancelled' ${ownerFilter}
        GROUP BY o.id
        ORDER BY o.id DESC
-       LIMIT ${Number(limit)} OFFSET ${Number(offset)}`
+       LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params
     );
     res.json(rows);
   } catch(err) {

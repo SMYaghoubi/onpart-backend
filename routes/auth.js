@@ -13,7 +13,7 @@ const sign = async (user, context = 'shop') => {
   return jwt.sign(
     { id: user.id, phone: user.phone, role: user.role, name: user.name, context },
     process.env.JWT_SECRET,
-    { expiresIn: days }
+    { expiresIn: context === 'registration' ? '30m' : days }
   );
 };
 
@@ -42,7 +42,11 @@ router.post('/send-otp', async (req, res) => {
 // ── POST /api/auth/verify-otp ──
 router.post('/verify-otp', async (req, res) => {
   try {
-    const { phone, code } = req.body;
+    const { phone } = req.body;
+    const code = String(req.body.code ?? req.body.otp ?? '').trim();
+    if (!/^09\d{9}$/.test(String(phone || '')) || !/^\d{4,6}$/.test(code)) {
+      return res.status(400).json({ message: 'شماره همراه یا کد تأیید نامعتبر است' });
+    }
     const valid = await SMS.verifyOTP(phone, code);
     if (!valid) return res.status(400).json({ message: 'کد نامعتبر یا منقضی شده' });
 
@@ -55,17 +59,23 @@ router.post('/verify-otp', async (req, res) => {
       isNewUser = true;
       const [result] = await db.execute(
         'INSERT INTO users (phone, role, status) VALUES (?,?,?)',
-        [phone, 'user', 'active']
+        [phone, 'user', 'pending']
       );
       [rows] = await db.execute('SELECT * FROM users WHERE id=?', [result.insertId]);
       user = rows[0];
     }
 
-    if (user.status === 'pending')
-      return res.status(403).json({ message: 'حساب شما در انتظار تأیید مدیر است' });
-
     if (user.status === 'blocked')
       return res.status(403).json({ message: 'حساب شما مسدود شده است' });
+
+    const registrationRequired = user.role === 'user' && (!user.name || !user.shop_name || !user.password);
+    if (registrationRequired && ['pending', 'active'].includes(user.status)) {
+      if (user.status !== 'pending') await db.execute('UPDATE users SET status="pending" WHERE id=?', [user.id]);
+      invalidateUserCache(user.id);
+      return res.json({ token: await sign(user, 'registration'), user: { id:user.id, name:user.name, phone:user.phone, role:user.role }, isNewUser, registration_required:true });
+    }
+    if (user.status !== 'active')
+      return res.status(403).json({ message: 'حساب شما در انتظار تأیید مدیر است' });
 
     res.json({ token: await sign(user, 'shop'), user: { id: user.id, name: user.name, phone: user.phone, role: user.role }, isNewUser });
   } catch (err) {
@@ -144,7 +154,7 @@ router.post('/user-login', async (req, res) => {
 });
 
 // ── POST /api/auth/change-password ──
-const { auth, adminAuth } = require('../middleware/auth');
+const { auth, adminAuth, invalidateUserCache } = require('../middleware/auth');
 
 // POST /api/auth/logout (management) - record only an authenticated explicit logout.
 router.post('/logout', adminAuth, async (req,res)=>{
