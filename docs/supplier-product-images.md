@@ -16,7 +16,7 @@ This adds one optional photo to the existing supplier single-product form and ex
 ## Storage and compatibility
 
 - Existing persistent UPLOAD_PATH configuration is reused. No new server credential, bucket, or external image service is needed.
-- New dependency: sharp 0.35.5; deployment needs Node.js >= 20.9.0 and installation of optional native dependencies. The Liara production Node version has not been inspected.
+- New dependencies: sharp 0.35.5 and an isolated supplier-photo-upload alias for Multer 2.5.0. Existing receipt/document endpoints keep their current multipart dependency. Deployment needs Node.js >= 20.9.0 and installation of optional native dependencies. The Liara production Node version has not been inspected.
 - Migration 022_supplier_product_images.sql creates one new table. Existing inventory schema initialization is reused and this table is initialized on the first authenticated supplier inventory/image operation. No existing columns or records are migrated.
 - No production migration has been executed during development.
 - Uploads are limited to 30 per supplier per 10 minutes and two simultaneous processing requests per application process. A supplier may hold up to 100 staged photos. Unsubmitted drafts expire after seven days and expired draft files are cleaned up during that supplier's next upload. Submitted/rejected photos are retained for review history; disk usage should be considered before a broad supplier rollout.

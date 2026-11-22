@@ -1,5 +1,5 @@
 const router=require('express').Router();
-const multer=require('multer');
+const multer=require('supplier-photo-upload');
 const rateLimit=require('express-rate-limit');
 const db=require('../config/database');
 const {supplierAuth,adminAuth}=require('../middleware/auth');
