@@ -10,11 +10,13 @@ const { normalizeProductCode, productCodeSqlExpression } = require('../lib/produ
 const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
 const { normalizeBrand, brandKey, mapSupplierBrands } = require('../lib/supplierBrands');
 const { normalizeSupplierPhone, supplierPhoneSql } = require('../lib/supplierRegistration');
+const { photoStore, imageId } = require('../lib/supplierImages');
+const photos = photoStore(db);
 
 const MAX_ROWS = 2000;
 const ensureInventorySchema = supplierInventorySchema(db);
 async function inventoryReady(_req, res, next) {
-  try { await ensureInventorySchema(); next(); }
+  try { await ensureInventorySchema(); await photos.ready(); next(); }
   catch (error) { console.error('Supplier inventory schema:', error.message); res.status(503).json({ message:'موجودی تأمین‌کنندگان موقتاً در دسترس نیست' }); }
 }
 const cleanPhone = normalizeSupplierPhone;
@@ -67,7 +69,7 @@ router.get('/products', supplierAuth, inventoryReady, async (req, res) => {
   try {
     const [rows] = await db.execute(
       `SELECT p.id,COALESCE(inv.manufacturer_code,p.code) code,p.description,p.car,p.brand,p.category,
-              p.price,COALESCE(inv.available,(p.stock>0)) available,p.has_flow,p.updated_at,inv.quantity,inv.supplier_price
+              p.price,p.image,COALESCE(inv.available,(p.stock>0)) available,p.has_flow,p.updated_at,inv.quantity,inv.supplier_price
        FROM products p
        LEFT JOIN supplier_inventory inv ON inv.supplier_id=? AND inv.product_id=p.id
        WHERE p.status='active' AND EXISTS(
@@ -81,8 +83,9 @@ router.get('/products', supplierAuth, inventoryReady, async (req, res) => {
       [req.supplier.id]
     );
     const [pendingProducts] = await db.execute(
-      `SELECT n.id,n.batch_id,n.code,n.description,n.brand,n.supplier_price,n.quantity,n.available
+      `SELECT n.id,n.batch_id,n.code,n.description,n.brand,n.supplier_price,n.quantity,n.available,im.id image_id
        FROM supplier_new_product_requests n JOIN supplier_update_batches b ON b.id=n.batch_id
+       LEFT JOIN supplier_product_images im ON im.new_product_id=n.id
        WHERE b.supplier_id=? AND b.status='pending' ORDER BY n.id DESC`,
       [req.supplier.id]
     );
@@ -117,14 +120,15 @@ router.get('/updates/:id', supplierAuth, inventoryReady, async (req, res) => {
     if (!batch) return res.status(404).json({ message:'درخواست یافت نشد' });
     const [items] = await db.execute(
       `SELECT COALESCE(inv.manufacturer_code,p.code) code,p.description,p.brand,CASE WHEN i.note IN ('stock_only','availability_only') THEN NULL ELSE i.supplier_price END supplier_price,
-              q.quantity,i.status,(i.proposed_stock>0) available
+              q.quantity,i.status,(i.proposed_stock>0) available,im.id image_id
        FROM supplier_update_items i JOIN products p ON p.id=i.product_id
        LEFT JOIN supplier_update_quantities q ON q.item_id=i.id
        LEFT JOIN supplier_inventory inv ON inv.product_id=p.id AND inv.supplier_id=?
+       LEFT JOIN supplier_product_images im ON im.product_id=p.id AND im.batch_id=i.batch_id AND im.new_product_id IS NULL
        WHERE i.batch_id=? ORDER BY i.id`, [req.supplier.id, batch.id]
     );
     const [newItems] = await db.execute(
-      'SELECT code,description,brand,supplier_price,quantity,available FROM supplier_new_product_requests WHERE batch_id=? ORDER BY id',
+      'SELECT n.code,n.description,n.brand,n.supplier_price,n.quantity,n.available,im.id image_id FROM supplier_new_product_requests n LEFT JOIN supplier_product_images im ON im.new_product_id=n.id WHERE n.batch_id=? ORDER BY n.id',
       [batch.id]
     );
     const [errors] = await db.execute('SELECT error_message FROM supplier_update_errors WHERE batch_id=? ORDER BY id', [batch.id]);
@@ -182,6 +186,7 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
       try {
         const originalCode = String(raw.code ?? '').trim();
         const code = normalizeProductCode(originalCode);
+        const photoId = imageId(raw.image_id);
         if (!code) throw new Error('کد محصول نامعتبر است');
         if (Object.prototype.hasOwnProperty.call(raw,'stock')) throw new Error('برای تعداد موجودی از فیلد quantity استفاده کنید');
         if (raw.new_product === true && raw.product_id == null) {
@@ -189,7 +194,7 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
           const identity = code + '\n' + brandKey(newProduct.brand);
           if (seenNew.has(identity)) throw new Error('کد و برند کالا در این لیست تکراری است');
           seenNew.add(identity);
-          newProducts.push(newProduct);
+          newProducts.push({...newProduct,imageId:photoId});
           continue;
         }
         let product;
@@ -217,7 +222,7 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
         const supplierPrice = hasPrice ? parseSupplierPrice(raw.supplier_price) : priorPrice;
         const priceChanged = hasPrice && (supplierPrice !== priorPrice || (raw.product_id != null && product.supplier_price == null));
         const { stock, quantity } = proposedInventory(raw, product);
-        if (priceChanged || stock != null || quantity != null) normalized.push({ product, supplierPrice, stock, quantity, priceChanged });
+        if (priceChanged || stock != null || quantity != null || photoId) normalized.push({ product, supplierPrice, stock, quantity, priceChanged, imageId:photoId });
       } catch (error) {
         errors.push('ردیف ' + (index+1) + ': ' + error.message);
       }
@@ -253,6 +258,15 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
       `INSERT INTO supplier_new_product_requests (batch_id,code,description,brand,supplier_price,quantity,available) VALUES ?`,
       [newProducts.map(row=>[batchResult.insertId,row.code,row.description,row.brand,row.price,row.quantity,Number(row.available)])]
     );
+    for (const row of normalized) if (row.imageId) await photos.attach(conn,row.imageId,req.supplier.id,batchResult.insertId,{productId:row.product.id});
+    if (newProducts.some(row=>row.imageId)) {
+      const [createdRows] = await conn.execute('SELECT id,code,brand FROM supplier_new_product_requests WHERE batch_id=?',[batchResult.insertId]);
+      for (const row of newProducts) if (row.imageId) {
+        const created = createdRows.find(item=>normalizeProductCode(item.code)===normalizeProductCode(row.code)&&brandKey(item.brand)===brandKey(row.brand));
+        if(!created) throw new Error('اتصال عکس به کالای جدید انجام نشد');
+        await photos.attach(conn,row.imageId,req.supplier.id,batchResult.insertId,{newProductId:created.id});
+      }
+    }
     const count = normalized.length + newProducts.length;
     if (requestKey) await conn.execute(
       'INSERT INTO supplier_submission_keys (supplier_id,request_key,batch_id,item_count) VALUES (?,?,?,?)',
@@ -268,7 +282,7 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
   } catch (err) {
     try { await conn?.rollback(); } catch (_) {}
     console.error('Supplier update submit failed:', err.message);
-    res.status(500).json({ message: 'خطا در ثبت تغییرات' });
+    res.status(err.status===400?400:500).json({ message:err.status===400?err.message:'خطا در ثبت تغییرات' });
   } finally { conn?.release(); }
 });
 
@@ -352,9 +366,10 @@ router.get('/admin/updates/:id', adminAuth, inventoryReady, async (req, res) => 
     );
     if(!batch) return res.status(404).json({ message:'بسته تغییرات یافت نشد' });
     const [itemRows] = await db.execute(
-      `SELECT i.*,p.code,p.description,p.brand,p.car,p.price current_price,p.stock current_stock,q.quantity proposed_quantity
+      `SELECT i.*,p.code,p.description,p.brand,p.car,p.image current_image,p.price current_price,p.stock current_stock,q.quantity proposed_quantity,im.id image_id
        FROM supplier_update_items i JOIN products p ON p.id=i.product_id
        LEFT JOIN supplier_update_quantities q ON q.item_id=i.id
+       LEFT JOIN supplier_product_images im ON im.product_id=p.id AND im.batch_id=i.batch_id AND im.new_product_id IS NULL
        WHERE i.batch_id=? ORDER BY i.id`, [req.params.id]
     );
     const items=itemRows.map(row=>{
@@ -362,7 +377,7 @@ router.get('/admin/updates/:id', adminAuth, inventoryReady, async (req, res) => 
       return {...item,proposed_available:proposed_stock==null?null:Number(proposed_stock)>0,previous_available:Number(previous_stock)>0,current_available:Number(current_stock)>0};
     });
     const [errors] = await db.execute('SELECT id,source_row,raw_code,error_message,status FROM supplier_update_errors WHERE batch_id=? ORDER BY id', [req.params.id]);
-    const [newItems] = await db.execute('SELECT * FROM supplier_new_product_requests WHERE batch_id=? ORDER BY id', [batch.id]);
+    const [newItems] = await db.execute('SELECT n.*,im.id image_id FROM supplier_new_product_requests n LEFT JOIN supplier_product_images im ON im.new_product_id=n.id WHERE n.batch_id=? ORDER BY n.id', [batch.id]);
     res.json({ batch,items,errors,newItems });
   } catch (err) { res.status(500).json({ message:'خطای سرور' }); }
 });
@@ -427,6 +442,8 @@ async function resolveNewProduct(conn, item) {
 
 router.post('/admin/updates/:id/approve', adminAuth, inventoryReady, async (req, res) => {
   let conn;
+  const copiedPhotos = [];
+  let committed = false;
   try {
     conn = await db.getConnection();
     const defaultPercent=Number(req.body.markup_percent);
@@ -484,14 +501,17 @@ router.post('/admin/updates/:id/approve', adminAuth, inventoryReady, async (req,
       await saveSupplierInventory(conn,batch.supplier_id,id,{ quantity:item.quantity,price:item.supplier_price,available:Boolean(Number(item.available)),code:item.code });
       await conn.execute('UPDATE supplier_new_product_requests SET product_id=? WHERE id=?',[id,item.id]);
     }
+    await photos.approve(conn,batch,copiedPhotos);
     await conn.execute('UPDATE supplier_update_batches SET status="approved",markup_percent=?,note=?,reviewed_by=?,reviewed_at=NOW() WHERE id=?',
       [defaultPercent,String(req.body.note||'').slice(0,1000)||null,req.user.id,batch.id]);
     await resolveAdminNotification(conn,'supplier_batch',batch.id,'/admin/supplier-updates');
     await conn.commit();
+    committed = true;
     notifyAdminNotificationsChanged({ entity_type:'supplier_batch', entity_id:Number(batch.id), resolved:true });
     res.json({ message:`${items.length + newItems.length} محصول با موفقیت بررسی و اعمال شد` });
   } catch(err){
     try{await conn?.rollback();}catch(_){}
+    if(!committed) await Promise.all(copiedPhotos.map(file=>require('node:fs/promises').unlink(file).catch(()=>{})));
     res.status(400).json({ message:err.message||'خطا در تأیید تغییرات' });
   } finally { conn?.release(); }
 });
@@ -514,18 +534,25 @@ router.delete('/admin/updates/:id', adminAuth, async (req, res) => {
   } catch(err){try{await conn.rollback()}catch(_){}res.status(500).json({message:'خطا در حذف درخواست'})}
   finally{conn.release()}
 });
-router.post('/admin/updates/:id/reject', adminAuth, async (req, res) => {
+router.post('/admin/updates/:id/reject', adminAuth, inventoryReady, async (req, res) => {
+  let conn;
   try {
-    const [result]=await db.execute(
+    conn=await db.getConnection();
+    await conn.beginTransaction();
+    const [result]=await conn.execute(
       'UPDATE supplier_update_batches SET status="rejected",note=?,reviewed_by=?,reviewed_at=NOW() WHERE id=? AND status="pending"',
       [String(req.body.note||'').slice(0,1000)||null,req.user.id,req.params.id]
     );
-    if(!result.affectedRows) return res.status(400).json({ message:'این بسته قابل رد نیست' });
-    await db.execute('UPDATE supplier_update_items SET status="rejected" WHERE batch_id=?',[req.params.id]);
-    await resolveAdminNotification(db,'supplier_batch',req.params.id,'/admin/supplier-updates');
+    if(!result.affectedRows){await conn.rollback();return res.status(400).json({ message:'این بسته قابل رد نیست' });}
+    await conn.execute('UPDATE supplier_update_items SET status="rejected" WHERE batch_id=?',[req.params.id]);
+    await conn.execute("UPDATE supplier_product_images SET state='rejected' WHERE batch_id=? AND state='pending'",[req.params.id]);
+    await resolveAdminNotification(conn,'supplier_batch',req.params.id,'/admin/supplier-updates');
+    await conn.commit();
     notifyAdminNotificationsChanged({ entity_type:'supplier_batch', entity_id:Number(req.params.id), resolved:true });
     res.json({ message:'تغییرات رد شد' });
-  } catch(err){res.status(500).json({ message:'خطای سرور' });}
+  } catch(err){try{await conn?.rollback();}catch(_){}res.status(500).json({ message:'خطای سرور' });}
+  finally{conn?.release();}
 });
 
 module.exports = router;
+
