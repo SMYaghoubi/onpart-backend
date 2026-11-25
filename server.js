@@ -104,11 +104,12 @@ app.use((req, res, next) => {
 app.use('/uploads', (req,res,next) => {
   if (isPrivateUploadPath(req.path)) return res.status(404).json({ message:'این فایل فقط از مسیر احرازشده قابل دریافت است' });
   next();
-}, express.static(uploadPath));
+}, require('./lib/supplierImages').approvedPhotoGuard(db), express.static(uploadPath));
 
 // ── Routes ──
 app.use('/api/auth',     require('./routes/auth'));
 app.use('/api/products', require('./routes/products'));
+app.use('/api/supplier-portal', require('./routes/supplierImages'));
 app.use('/api/orders',   require('./routes/orders'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/payments', require('./routes/payments'));
@@ -157,3 +158,4 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
+
