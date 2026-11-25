@@ -83,7 +83,7 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
     const [[s]] = await db.execute('SELECT * FROM suppliers WHERE id=?', [req.params.id]);
     if (!s) return res.status(404).json({ message: 'درخواست یافت نشد' });
     const [[linkedUser]]=await db.execute('SELECT u.id FROM users u WHERE TRIM(u.phone)=TRIM(?) AND NOT EXISTS(SELECT 1 FROM suppliers linked WHERE linked.user_id=u.id AND linked.id<>?) LIMIT 1',[s.mobile,req.params.id]);
-    await db.execute('UPDATE suppliers SET status="approved",user_id=COALESCE(user_id,?) WHERE id=?', [linkedUser?.id||null,req.params.id]);
+    await db.execute('UPDATE suppliers SET status="approved",portal_enabled=1,user_id=COALESCE(user_id,?) WHERE id=?', [linkedUser?.id||null,req.params.id]);
     await SMS.supplierApproved(s.mobile, s.name, req.params.id);
     res.json({ message: 'درخواست تایید شد' });
   } catch (err) {
