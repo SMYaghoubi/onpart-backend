@@ -63,7 +63,7 @@ async function setup(t) {
   const common = {'../config/database':db,'../config/sms':sms,'../middleware/auth':auth,'../config/notif':{createNotif:async()=>{}}};
   const supplierRoutes = load('routes/suppliers.js',common);
   const inventory = require('../lib/supplierInventory');
-  const portalRoutes = load('routes/supplierPortal.js',{...common,'../lib/supplierInventory':{...inventory,supplierInventorySchema:()=>async()=>{}},'../lib/supplierImages':{photoStore:()=>({ready:async()=>{}})},'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
+  const portalRoutes = load('routes/supplierPortal.js',{...common,'../lib/marketplace':{...require('../lib/marketplace'),marketplaceSchema:()=>async()=>{},publishOffer:async()=>{}},'../lib/supplierInventory':{...inventory,supplierInventorySchema:()=>async()=>{}},'../lib/supplierImages':{photoStore:()=>({ready:async()=>{}})},'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
   const app = express();app.use(express.json());app.use('/api/suppliers',supplierRoutes);app.use('/api/supplier-portal',portalRoutes);
   const server = await new Promise(resolve => {const s=app.listen(0,'127.0.0.1',()=>resolve(s));});
   const base = 'http://127.0.0.1:' + server.address().port;

@@ -15,6 +15,8 @@ const app = express();
 const APP_VERSION = require('./package.json').version;
 const ensureSupplierInventory = supplierInventorySchema(db);
 const ensureSupplierOrders = require('./lib/orderItemSnapshots').orderItemSnapshotSchema(db);
+const ensureMarketplace=require('./lib/marketplace').marketplaceSchema(db);
+ensureMarketplace().catch(error=>console.error('Marketplace initialization:',error.message));
 ensureSupplierInventory().catch(error => console.error('Supplier inventory initialization:', error.message));
 ensureSupplierOrders().catch(error => console.error('Supplier order initialization:', error.message));
 
@@ -114,6 +116,7 @@ app.use('/api/auth',     require('./routes/auth'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api/supplier-portal', require('./routes/supplierImages'));
 app.use('/api/supplier-portal', require('./routes/supplierOrders'));
+app.use('/api/marketplace',require('./routes/marketplace'));
 app.use('/api/orders',   require('./routes/orders'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/payments', require('./routes/payments'));
@@ -136,10 +139,10 @@ app.use('/api/dashboard',     require('./routes/dashboard'));
 app.get('/health', async (_req, res) => {
   try {
     await executeWithRetry(db,'SELECT 1 AS ok',[],{attempts:2,baseDelayMs:80});
-    res.json({status:'ok',database:'ok',supplier_inventory:ensureSupplierInventory.status(),supplier_orders:ensureSupplierOrders.status(),storage:{status:'ok',writable:uploadStorage.writable,persistence:uploadStorage.persistence},time:new Date().toISOString(),version:APP_VERSION});
+    res.json({status:'ok',database:'ok',supplier_inventory:ensureSupplierInventory.status(),supplier_orders:ensureSupplierOrders.status(),marketplace:ensureMarketplace.status(),storage:{status:'ok',writable:uploadStorage.writable,persistence:uploadStorage.persistence},time:new Date().toISOString(),version:APP_VERSION});
   } catch(error) {
     console.error('Health database check failed:',error.message);
-    res.status(503).json({status:'degraded',database:'unavailable',supplier_orders:ensureSupplierOrders.status(),storage:{status:'ok',writable:uploadStorage.writable,persistence:uploadStorage.persistence},time:new Date().toISOString(),version:APP_VERSION});
+    res.status(503).json({status:'degraded',database:'unavailable',supplier_orders:ensureSupplierOrders.status(),marketplace:ensureMarketplace.status(),storage:{status:'ok',writable:uploadStorage.writable,persistence:uploadStorage.persistence},time:new Date().toISOString(),version:APP_VERSION});
   }
 });
 
@@ -162,6 +165,7 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
+
 
 
 

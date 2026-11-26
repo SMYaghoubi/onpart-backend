@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const db     = require('../config/database');
+const market=require('../lib/marketplace');
 const { auth, adminAuth } = require('../middleware/auth');
 const { normalizeBulkProductUpdate } = require('../lib/productBulkUpdate');
 const { bulkUpdateProducts } = require('../lib/bulkProductsService');
@@ -18,6 +19,7 @@ router.use((req, res, next) => req.query.admin === '1' || req.method !== 'GET'
 router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):next(), async (req, res) => {
   try {
     const { search, car, brand, category, page = 1, limit = 50, admin } = req.query;
+    if(admin!=='1')await market.marketplaceSchema(db)();
     const offset = (page - 1) * limit;
     let where = ['p.status="active"'];
     const params = [];
@@ -33,7 +35,7 @@ router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):ne
 
     const sql = admin === '1'
       ? `SELECT p.*, s.company as supplier_name FROM products p LEFT JOIN suppliers s ON p.supplier_id=s.id WHERE ${where.join(' AND ')} ORDER BY p.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`
-      : `SELECT p.* FROM products p WHERE ${where.join(' AND ')} ORDER BY p.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
+      : `SELECT ${market.publicProductSql} FROM products p ${market.summaryJoin} WHERE ${where.join(' AND ')} ORDER BY p.id DESC LIMIT ${Math.min(1000000,Math.max(1,Number(limit)||50))} OFFSET ${Math.max(0,Number(offset)||0)}`;
 
     const [rows] = await executeWithRetry(db,sql,params);
 
@@ -45,7 +47,7 @@ router.get('/', (req,res,next)=>req.query.admin==='1'?adminAuth(req,res,next):ne
     const products=rows.map(row=>{
       const available=Number(row.stock)>0;
       if(admin==='1'){const {stock,min_stock,...managementProduct}=row;return {...managementProduct,available}}
-      return {...row,available};
+      return market.productDTO(row);
     });
     res.json({ products, total: count[0].total, page: Number(page), limit: Number(limit) });
   } catch (err) {
@@ -91,14 +93,11 @@ router.put('/metadata', adminAuth, async (req, res) => {
 });
 
 // GET /api/products/:id
-router.get('/:id', async (req, res) => {
-  try {
-    const [rows] = await db.execute('SELECT * FROM products WHERE id=?', [req.params.id]);
-    if (!rows.length) return res.status(404).json({ message: 'محصول یافت نشد' });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ message: 'خطای سرور' });
-  }
+router.get('/:id/offers', async(req,res)=>{
+ try{await market.marketplaceSchema(db)();const [[product]]=await db.execute(`SELECT ${market.publicProductSql} FROM products p ${market.summaryJoin} WHERE p.id=? AND p.status='active'`,[req.params.id]);if(!product)return res.status(404).json({message:'کالا یافت نشد'});res.json({product:market.productDTO(product),offers:await market.listOffers(db,req.params.id),shipping:{hub_city:'شهریار',coverage:'کشور',method:'post_recipient_pays',label:'ارسال از مرکز آن‌پارت؛ هزینه پست در مقصد'}});}catch(e){res.status(503).json({message:'دریافت پیشنهادها انجام نشد؛ دوباره تلاش کنید'})}
+});
+router.get('/:id', async (req,res)=>{
+ try{if(req.query.admin==='1'){const [[row]]=await db.execute('SELECT * FROM products WHERE id=?',[req.params.id]);return row?res.json(row):res.status(404).json({message:'محصول یافت نشد'});}await market.marketplaceSchema(db)();const [[product]]=await db.execute(`SELECT ${market.publicProductSql} FROM products p ${market.summaryJoin} WHERE p.id=? AND p.status='active'`,[req.params.id]);if(!product)return res.status(404).json({message:'محصول یافت نشد'});res.json(market.productDTO(product));}catch(e){res.status(503).json({message:'دریافت محصول انجام نشد'})}
 });
 
 // ── POST /api/products ── (admin)
@@ -197,3 +196,4 @@ router.post('/bulk-import', adminAuth, async (req,res)=>{
   }catch(error){res.status(500).json({message:'خطای سرور'});}
 });
 module.exports = router;
+

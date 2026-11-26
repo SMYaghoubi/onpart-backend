@@ -27,17 +27,18 @@ function stub(name, value) {
 }
 const snapshots = require('../lib/orderItemSnapshots');
 stub('../lib/orderItemSnapshots',{...snapshots,orderItemSnapshotSchema:()=>async()=>{}});
+stub('../lib/marketplace',{...require('../lib/marketplace'),marketplaceSchema:()=>async()=>{}});
 stub('../config/database', { getConnection:async () => conn, execute:async () => [[]] });
 stub('../config/sms', {});
 stub('../config/notif', { createNotif:async () => {} });
 stub('../lib/userNotifications', { createUserNotification:async () => {} });
 const router = require('../routes/orders');
 
-test('new supplier products snapshot the purchase price from the current supplier inventory', async () => {
+test('legacy manual orders snapshot purchase prices from the explicitly managed supplier', async () => {
   calls.length = 0;
-  const route = router.stack.find(layer => layer.route?.path === '/' && layer.route.methods.post).route;
+  const route = router.stack.find(layer => layer.route?.path === '/manual' && layer.route.methods.post).route;
   let response;
-  await route.stack[1].handle({ body:{ items:[{ product_id:3, quantity:2 }] }, user:{ id:7 } }, {
+  await route.stack[1].handle({ body:{ user_id:7,items:[{ product_id:3, quantity:2,price:105000 }] }, user:{ id:7 } }, {
     status() { return this; }, json(value) { response = value; }
   });
   assert.equal(response.total, 210000);

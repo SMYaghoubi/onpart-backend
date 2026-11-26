@@ -15,6 +15,14 @@ const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('.
 const { VALID_STATUSES, validateOrderTransition } = require('../lib/orderWorkflow');
 const { orderItemSnapshotSchema, itemSnapshot, insertOrderItem } = require('../lib/orderItemSnapshots');
 const ensureOrderSnapshots = orderItemSnapshotSchema(db);
+const market=require('../lib/marketplace');
+const ensureMarket=market.marketplaceSchema(db);
+function buyerItemDTO(item){
+  const dto=Object.fromEntries(['id','product_id','code','description','brand','car','car_name','quantity','price','discount','total'].filter(key=>Object.hasOwn(item,key)).map(key=>[key,item[key]]));
+  for(const [field,snapshot] of [['code','snapshot_code'],['description','snapshot_name'],['brand','snapshot_brand'],['car','car_name']])if(item[snapshot]!=null)dto[field]=item[snapshot];
+  return dto;
+}
+
 
 function orderReadAuth(req, res, next) {
   return req.query.admin === '1' ? adminAuth(req, res, next) : auth(req, res, next);
@@ -84,7 +92,7 @@ router.get('/my', auth, async (req, res) => {
          WHERE oi.order_id=?`,
         [order.id]
       );
-      order.items = items;
+      order.items = items.map(buyerItemDTO);
     }
 
     res.json(orders);
@@ -147,7 +155,7 @@ router.get('/:id', orderReadAuth, async (req, res) => {
       [req.params.id]
     );
 
-    res.json({ ...orders[0], items });
+    res.json({ ...orders[0], items:req.query.admin==='1'?items:items.map(buyerItemDTO) });
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
   }
@@ -155,7 +163,7 @@ router.get('/:id', orderReadAuth, async (req, res) => {
 
 // ── POST /api/orders/manual ── (admin - manual order)
 router.post('/manual', adminAuth, async (req, res) => {
-  try { await ensureOrderSnapshots(); }
+  try { await ensureOrderSnapshots(); await ensureMarket(); }
   catch(error) { return res.status(503).json({message:'ثبت سفارش موقتاً در دسترس نیست؛ دوباره تلاش کنید.'}); }
   const conn=await db.getConnection();
   let committed=false;
@@ -207,7 +215,7 @@ router.post('/manual', adminAuth, async (req, res) => {
 
 // ── POST /api/orders ──
 router.post('/', auth, async (req, res) => {
-  try { await ensureOrderSnapshots(); }
+  try { await ensureOrderSnapshots(); await ensureMarket(); }
   catch(error) { return res.status(503).json({message:'ثبت سفارش موقتاً در دسترس نیست؛ دوباره تلاش کنید.'}); }
   const conn = await db.getConnection();
   let committed = false;
@@ -219,32 +227,9 @@ router.post('/', auth, async (req, res) => {
 
     await conn.beginTransaction();
 
-    let total = 0;
-    const orderItems = [];
-
-    for (const item of items) {
-      const [[product]] = await conn.execute(
-        `SELECT p.*,${supplierPurchasePriceSql} supplier_cost_price,COALESCE(${supplierPurchasePriceSql},p.price) cost_price
-         FROM products p WHERE p.id=? AND p.status="active" AND p.stock>0`,
-        [item.product_id]
-      );
-      if (!product) throw new Error(`محصول ${item.product_id} موجود نیست`);
-      const itemTotal = product.price * item.quantity;
-      if (!Number.isSafeInteger(itemTotal) || !Number.isSafeInteger(Number(product.cost_price)*item.quantity)) throw new Error('مبلغ ردیف سفارش نامعتبر است');
-      total += itemTotal;
-      if (!Number.isSafeInteger(total)) throw new Error('مبلغ سفارش نامعتبر است');
-      orderItems.push({ product, quantity: item.quantity, price: product.price, costPrice:product.cost_price, total: itemTotal });
-    }
-
-    const [result] = await conn.execute(
-      'INSERT INTO orders (user_id, total, status) VALUES (?,?,?)',
-      [req.user.id, total, 'pending_expert']
-    );
-    const orderId = result.insertId;
-
-    for (const item of orderItems) {
-      await insertOrderItem(conn,orderId,item.product.id,item.quantity,item.price,0,item.total,itemSnapshot(item.product));
-    }
+    const registered=await market.createOrder(conn,req.user.id,items,req.body.request_key);
+    const orderId=registered.id,total=registered.total;
+    if(registered.replayed){await conn.commit();committed=true;return res.json({id:orderId,total,message:'این سفارش قبلاً ثبت شده است',replayed:true});}
 
     await conn.commit();
     committed = true;
@@ -267,7 +252,7 @@ router.post('/', auth, async (req, res) => {
     if (!committed) {
       try { await conn.rollback(); } catch (_) {}
     }
-    res.status(400).json({ message: err.message || 'خطا در ثبت سفارش' });
+    res.status(err.status||500).json({ message:err.status?err.message:'ثبت سفارش انجام نشد؛ دوباره تلاش کنید' });
   } finally {
     conn.release();
   }
@@ -314,6 +299,7 @@ router.patch('/:id/deliver', adminAuth, async (req, res) => {
       await conn.rollback();
       return res.status(400).json({ message: 'کد تحویل اشتباه است' });
     }
+    if(order.fulfillment_policy===market.POLICY)await market.assertReceived(conn,order.id);
     await conn.execute('UPDATE orders SET status="delivered" WHERE id=?', [req.params.id]);
     await resolveAdminNotification(conn,'order',req.params.id,'/admin/orders');
     await conn.commit();
@@ -340,6 +326,7 @@ router.patch('/:id/ship', adminAuth, async (req, res) => {
     const transition=validateOrderTransition(order,'shipping');
     if(!transition.ok){ await conn.rollback(); return res.status(transition.statusCode).json({message:transitionMessages[transition.code]||'تغییر وضعیت مجاز نیست',code:transition.code}); }
     if(transition.unchanged){ await conn.commit(); return res.json({message:'سفارش قبلاً وارد مرحله ارسال شده است',status:'shipping',delivery_code:order.delivery_code,unchanged:true}); }
+    if(order.fulfillment_policy===market.POLICY){await market.assertReceived(conn,order.id);if(shipping_method!=='post')throw market.error(409,'روش این مرحله پست با هزینه ارسال در مقصد است');}
     const needsDeliveryCode = !['post','tipax'].includes(shipping_method);
     const delivery_code = needsDeliveryCode ? Math.floor(100000 + Math.random() * 900000).toString() : null;
     await conn.execute(
@@ -363,7 +350,7 @@ router.patch('/:id/ship', adminAuth, async (req, res) => {
   } catch (err) {
     try{await conn.rollback()}catch(_){}
     console.error('Ship error:', err.message);
-    res.status(500).json({ message: 'خطای سرور' });
+    res.status(err.status||500).json({ message:err.status?err.message:'خطای سرور' });
   } finally { conn.release(); }
 });
 // ── PATCH /api/orders/:id/status ── (admin)
@@ -396,6 +383,7 @@ router.patch('/:id/status', adminAuth, async (req, res) => {
       debtRemaining = 0;
     }
 
+    if(order.fulfillment_policy===market.POLICY && ['shipping','delivered'].includes(status)){if(clear_shipping)throw market.error(409,'اطلاعات ارسال سفارش پستی نباید حذف شود');await market.assertReceived(conn,order.id);if(order.shipping_method!=='post')throw market.error(409,'اطلاعات ارسال پستی را ابتدا از بخش ثبت ارسال تکمیل کنید');}
     if(clear_shipping){
       await conn.execute(
         `UPDATE orders SET status=?,debt_remaining=?,shipping_method=NULL,shipping_tracking=NULL,
@@ -428,7 +416,7 @@ router.patch('/:id/status', adminAuth, async (req, res) => {
     res.json({ message: 'وضعیت سفارش و بدهی مشتری به‌روزرسانی شد', status, debt });
   } catch (err) {
     try { await conn.rollback(); } catch (_) {}
-    res.status(500).json({ message: 'خطای سرور' });
+    res.status(err.status||500).json({ message:err.status?err.message:'خطای سرور' });
   } finally { conn.release(); }
 });
 
@@ -471,7 +459,7 @@ router.delete('/:id', adminAuth, async (req, res) => {
 
 // ── PUT /api/orders/:id/items ── (admin) - replace order items, recalc total
 router.put('/:id/items', adminAuth, async (req, res) => {
-  try { await ensureOrderSnapshots(); }
+  try { await ensureOrderSnapshots(); await ensureMarket(); }
   catch(error) { return res.status(503).json({message:'ویرایش سفارش موقتاً در دسترس نیست؛ دوباره تلاش کنید.'}); }
   const conn = await db.getConnection();
   try {
@@ -486,7 +474,7 @@ router.put('/:id/items', adminAuth, async (req, res) => {
 
     await conn.beginTransaction();
     const [[order]] = await conn.execute(
-      'SELECT id,user_id,status FROM orders WHERE id=? FOR UPDATE',
+      'SELECT id,user_id,status,fulfillment_policy FROM orders WHERE id=? FOR UPDATE',
       [req.params.id]
     );
     if (!order) {
@@ -494,6 +482,7 @@ router.put('/:id/items', adminAuth, async (req, res) => {
       return res.status(404).json({ message:'سفارش یافت نشد' });
     }
 
+    if(order.fulfillment_policy===market.POLICY){await conn.rollback();return res.status(409).json({message:'اقلام پیشنهاد انتخاب‌شده ثابت است؛ برای اصلاح، سفارش را لغو و سفارش جدید ثبت کنید.'});}
     if (!['pending_expert', 'pending_customer'].includes(order.status)) {
       await conn.rollback();
       return res.status(409).json({ message: 'اقلام فاکتور پس از تأیید مشتری قابل ویرایش نیستند' });
@@ -592,4 +581,5 @@ router.patch('/:id/customer-reject', auth, async (req, res) => {
 });
 
 module.exports = router;
+
 

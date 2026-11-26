@@ -11,6 +11,7 @@ function database(){
   function executor(current){return async(sql,p=[])=>{
     const s=sql.replace(/\s+/g,' ').trim().toLowerCase();sqlLog.push({sql:s,params:p});
     const rows=v=>[structuredClone(v)];
+    if(s.startsWith('select r.quantity from market_reservations'))return rows([]);
     if(s.startsWith('create table'))return [{affectedRows:0}];
     const photoFor=(batch,id,isNew=false)=>current.photos.find(x=>x.batch_id===Number(batch)&&(isNew?x.new_product_id===id:x.product_id===id&&x.new_product_id==null))?.id;
     const batchView=b=>({...b,company:current.suppliers.find(x=>x.id===b.supplier_id)?.company,submitted_at:'2026-11-22T10:00:00Z',item_count:current.items.filter(x=>x.batch_id===b.id).length+current.newItems.filter(x=>x.batch_id===b.id).length});

@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const jwt = require('jsonwebtoken');
+const market=require('../lib/marketplace');
 const db = require('../config/database');
 const SMS = require('../config/sms');
 const { supplierAuth, adminAuth } = require('../middleware/auth');
@@ -16,7 +17,7 @@ const photos = photoStore(db);
 const MAX_ROWS = 2000;
 const ensureInventorySchema = supplierInventorySchema(db);
 async function inventoryReady(_req, res, next) {
-  try { await ensureInventorySchema(); await photos.ready(); next(); }
+  try { await ensureInventorySchema(); await photos.ready(); await market.marketplaceSchema(db)(); next(); }
   catch (error) { console.error('Supplier inventory schema:', error.message); res.status(503).json({ message:'موجودی تأمین‌کنندگان موقتاً در دسترس نیست' }); }
 }
 const cleanPhone = normalizeSupplierPhone;
@@ -69,7 +70,7 @@ router.get('/products', supplierAuth, inventoryReady, async (req, res) => {
   try {
     const [rows] = await db.execute(
       `SELECT p.id,COALESCE(inv.manufacturer_code,p.code) code,p.description,p.car,p.brand,p.category,
-              p.price,p.image,COALESCE(inv.available,(p.stock>0)) available,p.has_flow,p.updated_at,inv.quantity,inv.supplier_price
+              p.price,p.image,inv.final_price,inv.quantity-(COALESCE((SELECT SUM(r.quantity) FROM market_reservations r JOIN orders ro ON ro.id=r.order_id WHERE r.supplier_id=inv.supplier_id AND r.product_id=p.id AND r.state='reserved' AND ro.status<>'cancelled'),0)) unreserved_quantity,COALESCE(inv.available,(p.stock>0)) available,p.has_flow,p.updated_at,inv.quantity,inv.supplier_price
        FROM products p
        LEFT JOIN supplier_inventory inv ON inv.supplier_id=? AND inv.product_id=p.id
        WHERE p.status='active' AND EXISTS(
@@ -171,7 +172,7 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
     const byId = new Map();
     if (ids.length) {
       const [known] = await conn.execute(
-        `SELECT p.id,p.code,p.brand,p.price,p.stock,inv.quantity,inv.supplier_price,inv.available supplier_available,inv.manufacturer_code
+        `SELECT p.id,p.code,p.brand,p.price,p.stock,inv.quantity,inv.supplier_price,inv.available supplier_available,inv.final_price,inv.manufacturer_code
          FROM products p LEFT JOIN supplier_inventory inv ON inv.supplier_id=? AND inv.product_id=p.id
          WHERE p.status='active' AND p.id IN (${ids.map(() => '?').join(',')})`,
         [req.supplier.id, ...ids]
@@ -212,6 +213,10 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
           if (possible.length > 1) throw new Error('این کد چند کالا دارد؛ کالای درست و برند آن را انتخاب کنید');
           if (!possible.length && matching.length) throw new Error('کد «' + originalCode + '» خارج از برندهای مجاز یا انتخاب‌شده شما است');
           product = possible[0];
+          if(product){
+            const [[inventory]]=await conn.execute('SELECT quantity,supplier_price,available supplier_available,final_price,manufacturer_code FROM supplier_inventory WHERE supplier_id=? AND product_id=?',[req.supplier.id,product.id]);
+            if(inventory)Object.assign(product,inventory);
+          }
         }
         if (!product) throw new Error('محصول با کد «' + originalCode + '» یافت نشد');
         if (!isProductInAllowedBrands(product, brands)) throw new Error('کالا خارج از برندهای مجاز شما است');
@@ -220,7 +225,7 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
         const hasPrice = raw.supplier_price != null && raw.supplier_price !== '';
         const priorPrice = Number(product.supplier_price ?? product.price ?? 0);
         const supplierPrice = hasPrice ? parseSupplierPrice(raw.supplier_price) : priorPrice;
-        const priceChanged = hasPrice && (supplierPrice !== priorPrice || (raw.product_id != null && product.supplier_price == null));
+        const priceChanged = hasPrice && (supplierPrice !== priorPrice || (product.supplier_price == null || product.final_price == null));
         const { stock, quantity } = proposedInventory(raw, product);
         if (priceChanged || stock != null || quantity != null || photoId) normalized.push({ product, supplierPrice, stock, quantity, priceChanged, imageId:photoId });
       } catch (error) {
@@ -238,7 +243,7 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
     );
     if (normalized.length) {
       const rows = normalized.map(row => [
-        batchResult.insertId,row.product.id,row.supplierPrice,row.stock,row.product.price||0,
+        batchResult.insertId,row.product.id,row.supplierPrice,row.stock,row.product.final_price??row.product.price??0,
         row.product.supplier_available??row.product.stock??0,row.priceChanged?null:'stock_only'
       ]);
       await conn.query(
@@ -366,11 +371,12 @@ router.get('/admin/updates/:id', adminAuth, inventoryReady, async (req, res) => 
     );
     if(!batch) return res.status(404).json({ message:'بسته تغییرات یافت نشد' });
     const [itemRows] = await db.execute(
-      `SELECT i.*,p.code,p.description,p.brand,p.car,p.image current_image,p.price current_price,p.stock current_stock,q.quantity proposed_quantity,im.id image_id
+      `SELECT i.*,p.code,p.description,p.brand,p.car,p.image current_image,COALESCE(inv.final_price,p.price) current_price,p.stock current_stock,q.quantity proposed_quantity,im.id image_id
        FROM supplier_update_items i JOIN products p ON p.id=i.product_id
        LEFT JOIN supplier_update_quantities q ON q.item_id=i.id
        LEFT JOIN supplier_product_images im ON im.product_id=p.id AND im.batch_id=i.batch_id AND im.new_product_id IS NULL
-       WHERE i.batch_id=? ORDER BY i.id`, [req.params.id]
+       LEFT JOIN supplier_inventory inv ON inv.product_id=p.id AND inv.supplier_id=?
+       WHERE i.batch_id=? ORDER BY i.id`, [batch.supplier_id,req.params.id]
     );
     const items=itemRows.map(row=>{
       const { proposed_stock,previous_stock,current_stock,...item }=row;
@@ -453,7 +459,7 @@ router.post('/admin/updates/:id/approve', adminAuth, inventoryReady, async (req,
     const [[batch]] = await conn.execute('SELECT * FROM supplier_update_batches WHERE id=? FOR UPDATE', [req.params.id]);
     if(!batch||batch.status!=='pending') throw new Error('این بسته قبلاً بررسی شده است');
     const [items] = await conn.execute(
-      `SELECT i.*,p.brand,p.status product_status,p.price current_price,q.quantity proposed_quantity,inv.quantity
+      `SELECT i.*,p.brand,p.status product_status,p.price current_price,q.quantity proposed_quantity,inv.quantity,inv.final_price supplier_final_price
        FROM supplier_update_items i JOIN products p ON p.id=i.product_id
        LEFT JOIN supplier_update_quantities q ON q.item_id=i.id
        LEFT JOIN supplier_inventory inv ON inv.product_id=p.id AND inv.supplier_id=?
@@ -471,7 +477,7 @@ router.post('/admin/updates/:id/approve', adminAuth, inventoryReady, async (req,
       const percent=override==null||override===''?defaultPercent:Number(override);
       if(!Number.isFinite(percent)||percent<0||percent>1000) throw new Error(`درصد ردیف ${item.id} نامعتبر است`);
       const priceChanged = !['stock_only','availability_only'].includes(item.note);
-      const finalPrice = priceChanged ? calculateFinalPrice(item.supplier_price,percent) : Number(item.current_price);
+      const finalPrice = priceChanged ? calculateFinalPrice(item.supplier_price,percent) : Number(item.supplier_final_price??item.current_price);
       const quantity = item.proposed_quantity ?? item.quantity;
       if (Number(item.proposed_stock) > 0 && quantity === 0) throw new Error('تعداد موجودی ردیف «' + item.id + '» صفر است');
       if(item.proposed_stock==null){
@@ -485,8 +491,9 @@ router.post('/admin/updates/:id/approve', adminAuth, inventoryReady, async (req,
         quantity:item.proposed_quantity, price:priceChanged ? item.supplier_price : null,
         available:item.proposed_stock == null ? null : Number(item.proposed_stock) > 0
       });
+      if(priceChanged || item.proposed_quantity!=null || item.proposed_stock!=null)await market.publishOffer(conn,batch.supplier_id,item.product_id,priceChanged?finalPrice:null);
       appliedProductIds.add(Number(item.product_id));
-      await conn.execute('UPDATE supplier_update_items SET final_price=?,status="approved" WHERE id=?',[finalPrice,item.id]);
+      await conn.execute('UPDATE supplier_update_items SET final_price=?,status="approved" WHERE id=?',[priceChanged?finalPrice:(item.supplier_final_price??null),item.id]);
     }
     for (const item of newItems) {
       if (!isProductInAllowedBrands(item, allowedBrands)) throw new Error('برند «' + item.brand + '» دیگر مجاز نیست');
@@ -499,6 +506,7 @@ router.post('/admin/updates/:id/approve', adminAuth, inventoryReady, async (req,
       if (item.quantity === 0 && Number(item.available)) throw new Error('تعداد موجودی کالای جدید صفر است');
       await conn.execute('UPDATE products SET price=?,stock=?,supplier_id=? WHERE id=?', [price,Number(item.available) ? 1 : 0,batch.supplier_id,id]);
       await saveSupplierInventory(conn,batch.supplier_id,id,{ quantity:item.quantity,price:item.supplier_price,available:Boolean(Number(item.available)),code:item.code });
+      await market.publishOffer(conn,batch.supplier_id,id,price);
       await conn.execute('UPDATE supplier_new_product_requests SET product_id=? WHERE id=?',[id,item.id]);
     }
     await photos.approve(conn,batch,copiedPhotos);
@@ -555,4 +563,5 @@ router.post('/admin/updates/:id/reject', adminAuth, inventoryReady, async (req, 
 });
 
 module.exports = router;
+
 

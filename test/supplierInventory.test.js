@@ -26,7 +26,7 @@ test('new product proposals require a code and allowed brand and zero remains un
 
 test('supplier inventory upsert preserves false, zero and unmodified values', async () => {
   const calls = [];
-  const conn = { execute: async (...args) => calls.push(args) };
+  const conn = { execute: async (...args) => {if(args[0].startsWith('SELECT r.quantity'))return [[]];calls.push(args);return [{affectedRows:1}];} };
   await saveSupplierInventory(conn, 5, 9, { available:false,quantity:0 });
   assert.match(calls[0][0],/COALESCE\(VALUES\(quantity\),quantity\)/);
   assert.deepEqual(calls[0][1],[5,9,0,null,false,null]);
@@ -39,3 +39,4 @@ test('inventory schema initializes once across concurrent authenticated calls', 
   assert.equal(calls.length,4);
   assert.ok(calls.every(sql=>sql.startsWith('CREATE TABLE IF NOT EXISTS')));
 });
+
