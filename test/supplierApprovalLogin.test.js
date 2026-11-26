@@ -20,6 +20,7 @@ async function setup(t) {
   const uploadPath = process.env.UPLOAD_PATH;
   const state = { id:42, company:'test supplier', name:'test owner', mobile:'09120000000', status:'pending', portal_enabled:0, user_id:null, brands:'ايساكو، سایپایدک' };
   const users = [{id:9,role:'admin',status:'active'},{id:101,role:'user',status:'active'}];
+  const codes=new Map();
   const writes = [], smsCalls = [], scopes = [], catalog = [{brand:'ISACO | ایساکو'}, {brand:'سایپا یدک'}, {brand:'بوش'}];
   let before, failBrand = false;
   const conn = {
@@ -30,6 +31,9 @@ async function setup(t) {
     execute:(sql,params) => db.execute(sql,params)
   };
   const db = { execute:async (sql, params) => {
+    if (sql.startsWith('-- A public')||sql.startsWith('CREATE TABLE'))return [{affectedRows:0}];
+    if(sql.startsWith('SELECT seller_code'))return [codes.has(Number(params[0]))?[{seller_code:codes.get(Number(params[0]))}]:[]];
+    if(sql.startsWith('INSERT INTO supplier_seller_codes')){codes.set(Number(params[0]),params[1]);return [{affectedRows:1}];}
     if (sql.startsWith('SELECT id,role,status FROM users')) return [users.filter(user => user.id === Number(params[0]))];
     if (sql.startsWith('SELECT * FROM suppliers WHERE id=')) return [[...(Number(params[0]) === state.id ? [{...state}] : [])]];
     if(sql.startsWith('SELECT DISTINCT TRIM(brand)')) return [catalog];
@@ -53,6 +57,7 @@ async function setup(t) {
     }
     throw new Error('Unexpected test SQL: ' + sql);
   }};
+  db.query=sql=>db.execute(sql,[]);
   db.getConnection=async()=>conn;
   const sms = {
     supplierApproved:async (...args) => smsCalls.push(['approved',...args]),
@@ -63,7 +68,7 @@ async function setup(t) {
   const common = {'../config/database':db,'../config/sms':sms,'../middleware/auth':auth,'../config/notif':{createNotif:async()=>{}}};
   const supplierRoutes = load('routes/suppliers.js',common);
   const inventory = require('../lib/supplierInventory');
-  const portalRoutes = load('routes/supplierPortal.js',{...common,'../lib/supplierInventory':{...inventory,supplierInventorySchema:()=>async()=>{}},'../lib/supplierImages':{photoStore:()=>({ready:async()=>{}})},'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
+  const portalRoutes = load('routes/supplierPortal.js',{...common,'../lib/marketplace':{...require('../lib/marketplace'),marketplaceSchema:()=>async()=>{},publishOffer:async()=>{}},'../lib/supplierInventory':{...inventory,supplierInventorySchema:()=>async()=>{}},'../lib/supplierImages':{photoStore:()=>({ready:async()=>{}})},'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
   const app = express();app.use(express.json());app.use('/api/suppliers',supplierRoutes);app.use('/api/supplier-portal',portalRoutes);
   const server = await new Promise(resolve => {const s=app.listen(0,'127.0.0.1',()=>resolve(s));});
   const base = 'http://127.0.0.1:' + server.address().port;

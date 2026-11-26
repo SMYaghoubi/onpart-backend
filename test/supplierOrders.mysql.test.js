@@ -34,7 +34,8 @@ test('supplier order ownership and snapshots through real MySQL, payment allocat
  const supplier=id=>jwt.sign({supplier_id:id,role:'supplier'},process.env.JWT_SECRET);
  async function request(p,{token=buyer,method='GET',body}={}){const r=await fetch(url+p,{method,headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});return {status:r.status,data:await r.json()};}
  const base='/api/supplier-portal/orders';
- let created=await request('/api/orders',{method:'POST',body:{items:[{product_id:10,quantity:2,supplier_id:2,cost_price:1},{product_id:11,quantity:3}]}});
+ async function legacyOrder(items){const values=[];for(const item of items){const [[p]]=await pool.execute('SELECT price FROM products WHERE id=?',[item.product_id]);values.push({...item,price:p.price});}return request('/api/orders/manual',{token:manager,method:'POST',body:{user_id:101,items:values}});}
+ let created=await legacyOrder([{product_id:10,quantity:2,supplier_id:2,cost_price:1},{product_id:11,quantity:3}]);
  assert.equal(created.status,201,JSON.stringify(created.data));const id=created.data.id;
  assert.equal(created.data.total,840000);
  assert.equal(require("../lib/orderItemSnapshots").orderItemSnapshotSchema(pool).status(),"ok");
@@ -77,12 +78,12 @@ test('supplier order ownership and snapshots through real MySQL, payment allocat
  const [[legacy]]=await pool.execute('SELECT * FROM order_items WHERE order_id=900');assert.equal(legacy.supplier_id,null);assert.equal(Number(legacy.cost_price),100000);assert.equal(legacy.car_name,'خودروی قدیمی');
  const migration=await fs.readFile(path.join(__dirname,'../migrations/023_order_item_supplier_snapshot.sql'),'utf8');await admin.query(migration);await admin.query(migration);
  // An order solely owned by supplier two is not accessible to supplier one.
- const own2=await request('/api/orders',{method:'POST',body:{items:[{product_id:11,quantity:1}]}});assert.equal(own2.status,201);const id2=own2.data.id;
+ const own2=await legacyOrder([{product_id:11,quantity:1}]);assert.equal(own2.status,201);const id2=own2.data.id;
  await pool.execute('UPDATE orders SET status="pending_payment",debt_remaining=total WHERE id=?',[id2]);await pay(id2,210000);
  assert.equal((await request(base+'/'+id2,{token:supplier(1)})).status,404);
  assert.equal((await request(base+'/'+id2,{token:supplier(2)})).status,200);
  // No real supplier purchase price: do not mislabel the fallback selling price as earnings.
- const unknown=await request('/api/orders',{method:'POST',body:{items:[{product_id:12,quantity:1},{product_id:13,quantity:1}]}});assert.equal(unknown.status,201);const id3=unknown.data.id;
+ const unknown=await legacyOrder([{product_id:12,quantity:1},{product_id:13,quantity:1}]);assert.equal(unknown.status,201);const id3=unknown.data.id;
  await pool.execute('UPDATE orders SET status="pending_payment",debt_remaining=total WHERE id=?',[id3]);await pay(id3,130000);
  const missing=await request(base+'/'+id3,{token:supplier(1)});assert.equal(missing.status,200);assert.equal(missing.data.items.length,1);assert.equal(missing.data.items[0].supplier_price,null);assert.equal(missing.data.supplier_total,null);
  await pool.execute('UPDATE orders SET status="cancelled" WHERE id=?',[id]);assert.equal((await request(base+'?status=cancelled',{token:supplier(1)})).data.orders[0].status,'cancelled');
@@ -101,7 +102,7 @@ test('supplier order ownership and snapshots through real MySQL, payment allocat
 
  await admin.query("CREATE TRIGGER test_snapshot_failure BEFORE INSERT ON order_items FOR EACH ROW BEGIN IF NEW.product_id=13 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='isolated snapshot failure'; END IF; END");
  const [[beforeHeaders]]=await pool.query('SELECT COUNT(*) n FROM orders'),[[beforeLines]]=await pool.query('SELECT COUNT(*) n FROM order_items');
- const failedInsert=await request('/api/orders',{method:'POST',body:{items:[{product_id:11,quantity:1},{product_id:13,quantity:1}]}});assert.equal(failedInsert.status,400);
+ const failedInsert=await legacyOrder([{product_id:11,quantity:1},{product_id:13,quantity:1}]);assert.equal(failedInsert.status,400);
  const [[afterHeaders]]=await pool.query('SELECT COUNT(*) n FROM orders'),[[afterLines]]=await pool.query('SELECT COUNT(*) n FROM order_items');assert.equal(afterHeaders.n,beforeHeaders.n);assert.equal(afterLines.n,beforeLines.n);
  await admin.query('DROP TRIGGER test_snapshot_failure');
  // Editing a legacy row must not invent an owner from the current catalog.

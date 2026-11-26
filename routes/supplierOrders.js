@@ -2,7 +2,7 @@ const router = require('express').Router();
 const db = require('../config/database');
 const { supplierAuth } = require('../middleware/auth');
 const { orderItemSnapshotSchema } = require('../lib/orderItemSnapshots');
-const ensureSchema = orderItemSnapshotSchema(db);
+const ensureSchema = require('../lib/marketplace').marketplaceSchema(db);
 const statuses = ['preparing','shipping','delivered','cancelled'];
 const paid = `(o.total=0 OR COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
   JOIN payments payment ON payment.id=pa.payment_id
@@ -20,7 +20,7 @@ router.get('/orders',supplierAuth,ready,async(req,res)=>{
   if (status) {where.push('o.status=?');params.push(status);}
   try {
     const [orders] = await db.execute(
-      `SELECT o.id,o.created_at,o.status,COUNT(*) line_count,SUM(oi.quantity) quantity,
+      `SELECT o.id,o.created_at,o.status,o.fulfillment_policy,o.hub_city,COUNT(*) line_count,SUM(oi.quantity) quantity,
        ${knownTotal} supplier_total FROM order_items oi JOIN orders o ON o.id=oi.order_id
        WHERE ${where.join(' AND ')} GROUP BY o.id,o.created_at,o.status
        ORDER BY o.created_at DESC,o.id DESC LIMIT ${limit} OFFSET ${(page-1)*limit}`,params);
@@ -34,7 +34,7 @@ router.get('/orders/:id',supplierAuth,ready,async(req,res)=>{
   if (!Number.isSafeInteger(id) || id<=0) return res.status(400).json({message:'شماره سفارش نامعتبر است.'});
   try {
     const [[order]] = await db.execute(
-      `SELECT o.id,o.created_at,o.status,COUNT(*) line_count,SUM(oi.quantity) quantity,
+      `SELECT o.id,o.created_at,o.status,o.fulfillment_policy,o.hub_city,COUNT(*) line_count,SUM(oi.quantity) quantity,
        ${knownTotal} supplier_total FROM order_items oi JOIN orders o ON o.id=oi.order_id
        WHERE oi.supplier_id=? AND o.id=? AND o.status IN ('preparing','shipping','delivered','cancelled') AND ${paid}
        GROUP BY o.id,o.created_at,o.status`,[req.supplier.id,id]);

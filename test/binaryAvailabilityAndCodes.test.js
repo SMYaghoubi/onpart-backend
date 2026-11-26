@@ -18,8 +18,8 @@ test('binary sentinel means purchasable, not a quantity cap',()=>{
 
 test('cart and order routes check availability without comparing or decrementing sentinel stock',()=>{
   const cart=read('routes/cart.js'),orders=read('routes/orders.js');
-  assert.match(cart,/isProductAvailable\(product\)/);assert.doesNotMatch(cart,/quantity\s*>\s*Number\(product\.stock\)|quantity\s*>\s*stockById/);
-  assert.match(orders,/p\.stock>0/);assert.match(orders,/normalizeCartItems/);
+  assert.match(cart,/market\.lockOffer\(conn,chosen\)/);assert.doesNotMatch(cart,/quantity\s*>\s*Number\(product\.stock\)|quantity\s*>\s*stockById/);
+  assert.match(orders,/market\.createOrder/);assert.match(orders,/normalizeCartItems/);
   assert.doesNotMatch(orders,/UPDATE products SET stock=stock-\?/);
 });
 

@@ -1,3 +1,4 @@
+const { sellerCodeSchema, assignApprovedSellerCodes } = require('../lib/sellerCodes');
 const router = require('express').Router();
 const db     = require('../config/database');
 const { adminAuth } = require('../middleware/auth');
@@ -71,7 +72,9 @@ router.get('/public-stats', async (req, res) => {
 // ── GET /api/suppliers ── (admin)
 router.get('/', adminAuth, async (req, res) => {
   try {
-    const [rows] = await db.execute('SELECT * FROM suppliers ORDER BY created_at DESC');
+    await sellerCodeSchema(db)();
+    await assignApprovedSellerCodes(db);
+    const [rows] = await db.execute('SELECT s.*,codes.seller_code FROM suppliers s LEFT JOIN supplier_seller_codes codes ON codes.supplier_id=s.id ORDER BY s.created_at DESC');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'خطای سرور' });
@@ -86,7 +89,7 @@ router.patch('/:id/approve', adminAuth, async (req, res) => {
     const s = result.supplier;
     try { if (!result.brandsReapproved) await SMS.supplierApproved(s.mobile, s.name, req.params.id); }
     catch (error) { console.error('Supplier approval SMS failed:', error.message); }
-    res.json({ message:'حساب و برندهای اعلام‌شده فروشنده تأیید و فعال شدند.', brands:result.brands });
+    res.json({ message:'حساب و برندهای اعلام‌شده فروشنده تأیید و فعال شدند.', brands:result.brands, seller_code:s.seller_code });
   } catch (err) {
     res.status(err.status || 500).json({ message:err.status ? err.message : 'خطا در تأیید حساب و برندها؛ تغییری ذخیره نشد.' });
   }
@@ -117,3 +120,4 @@ router.delete('/:id', adminAuth, async (req, res) => {
 });
 
 module.exports = router;
+
