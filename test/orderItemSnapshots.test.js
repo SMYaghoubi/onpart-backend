@@ -13,8 +13,8 @@ test('a catalog selling-price fallback is not presented as a confirmed supplier 
 test('schema initialization shares one connection/lock and retries after transient failure',async()=>{
  let attempts=0,released=0,fail=true;
  const db={getConnection:async()=>{attempts++;return {query:async sql=>{if(sql.includes('GET_LOCK'))return [[{acquired:1}]];if(fail&&!sql.includes('RELEASE_LOCK')){fail=false;throw new Error('isolated failure');}return [[]];},release:()=>{released++;}};}};
- const ensure=orderItemSnapshotSchema(db);
- await assert.rejects(ensure(),/isolated failure/);
+ const ensure=orderItemSnapshotSchema(db);assert.equal(ensure.status(),"pending");
+ await assert.rejects(ensure(),/isolated failure/);assert.equal(ensure.status(),"unavailable");
  await Promise.all([ensure(),ensure()]);
- assert.equal(attempts,2);assert.equal(released,2);
+ assert.equal(ensure.status(),"ok");assert.equal(attempts,2);assert.equal(released,2);
 });

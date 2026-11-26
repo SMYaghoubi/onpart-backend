@@ -4,7 +4,7 @@ New order lines record the selected supplier ID, product code/name/brand and the
 
 Editing a draft invoice preserves the supplier/cost/labels of retained lines. Added products receive new snapshots. Existing post-customer-approval editing restrictions remain. Manual management orders must select catalog products, send their IDs, and save their actual lines and snapshots atomically with the header. The server calculates the same row/overall discount arithmetic as the form instead of accepting an inconsistent header total. Free-text, unlinked rows are rejected with an explanation.
 
-Migration 023 only adds nullable snapshot columns, a known-price flag and an index. It never backfills historical ownership or rewrites historical amounts. Like the existing supplier inventory schema initialization, the additive migration is initialized lazily, using one MySQL connection and a database-specific advisory lock. Failures return an unavailable response and retry on a later request. Deploy with permission to apply the additive migration; no production migration has been run during development.
+Migration 023 only adds nullable snapshot columns, a known-price flag and an index. It never backfills historical ownership or rewrites historical amounts. Like the existing supplier inventory schema initialization, the additive migration is initialized at startup (and retried lazily), using one MySQL connection and a database-specific advisory lock. The health response reports supplier_orders as pending/ok/unavailable and the release reports package version 1.0.3. Failures return an unavailable response and retry on a later request. Deploy with permission to apply the additive migration; no production migration has been run during development.
 
 ## Supplier API
 

@@ -37,6 +37,7 @@ test('supplier order ownership and snapshots through real MySQL, payment allocat
  let created=await request('/api/orders',{method:'POST',body:{items:[{product_id:10,quantity:2,supplier_id:2,cost_price:1},{product_id:11,quantity:3}]}});
  assert.equal(created.status,201,JSON.stringify(created.data));const id=created.data.id;
  assert.equal(created.data.total,840000);
+ assert.equal(require("../lib/orderItemSnapshots").orderItemSnapshotSchema(pool).status(),"ok");
  let [rows]=await pool.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY product_id',[id]);
  assert.deepEqual(rows.map(r=>[r.supplier_id,Number(r.cost_price),r.supplier_price_known]),[[1,100000,1],[2,200000,1]]);
  assert.equal((await request(base,{token:supplier(1)})).data.orders.length,0);
