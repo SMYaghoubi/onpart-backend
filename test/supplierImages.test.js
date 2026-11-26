@@ -16,7 +16,7 @@ async function setup(t){
   const fixture=database(),auth=load('middleware/auth.js',{'../config/database':fixture.db});
   const common={'../config/database':fixture.db,'../middleware/auth':auth};
   const images=load('routes/supplierImages.js',common);
-  const portal=load('routes/supplierPortal.js',{...common,'../lib/marketplace':{...require('../lib/marketplace'),marketplaceSchema:()=>async()=>{},publishOffer:async()=>{}},'../config/sms':{},'../config/notif':{createNotif:async()=>{}},'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
+  const portal=load('routes/supplierPortal.js',{...common,'../lib/brandCatalog':{...require('../lib/brandCatalog'),brandCatalogSchema:()=>async()=>{},assertActiveNames:async(_db,names)=>names},'../lib/marketplace':{...require('../lib/marketplace'),marketplaceSchema:()=>async()=>{},publishOffer:async()=>{}},'../config/sms':{},'../config/notif':{createNotif:async()=>{}},'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
   const app=express();app.use(express.json());app.use('/api/supplier-portal',images,portal);
   app.use('/uploads',(req,res,next)=>isPrivateUploadPath(req.path)?res.sendStatus(404):next(),approvedPhotoGuard(fixture.db),express.static(directory));
   const server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});

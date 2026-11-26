@@ -36,7 +36,8 @@ async function setup(t) {
     if(sql.startsWith('INSERT INTO supplier_seller_codes')){codes.set(Number(params[0]),params[1]);return [{affectedRows:1}];}
     if (sql.startsWith('SELECT id,role,status FROM users')) return [users.filter(user => user.id === Number(params[0]))];
     if (sql.startsWith('SELECT * FROM suppliers WHERE id=')) return [[...(Number(params[0]) === state.id ? [{...state}] : [])]];
-    if(sql.startsWith('SELECT DISTINCT TRIM(brand)')) return [catalog];
+    if(sql.startsWith('SELECT name brand FROM brand_catalog')) return [catalog];
+    if(sql.startsWith('SELECT id,name,logo_id FROM brand_catalog'))return [catalog.map((row,i)=>({id:i+1,name:row.brand,logo_id:null}))];
     if(sql.startsWith('DELETE FROM supplier_product_scopes')){writes.push({sql,params});for(let i=scopes.length-1;i>=0;i--)if(scopes[i].supplier_id===Number(params[0])&&scopes[i].scope_type==='brand')scopes.splice(i,1);return [{affectedRows:1}];}
     if(sql.startsWith('INSERT INTO supplier_product_scopes')){
       if(failBrand) throw new Error('isolated insert failure');
@@ -66,9 +67,10 @@ async function setup(t) {
   };
   const auth = load('middleware/auth.js', {'../config/database':db});
   const common = {'../config/database':db,'../config/sms':sms,'../middleware/auth':auth,'../config/notif':{createNotif:async()=>{}}};
-  const supplierRoutes = load('routes/suppliers.js',common);
+  const approval=load('lib/supplierApproval.js',{'./brandCatalog':{brandCatalogSchema:()=>async()=>{}}});
+  const supplierRoutes = load('routes/suppliers.js',{...common,'../lib/supplierApproval':approval});
   const inventory = require('../lib/supplierInventory');
-  const portalRoutes = load('routes/supplierPortal.js',{...common,'../lib/marketplace':{...require('../lib/marketplace'),marketplaceSchema:()=>async()=>{},publishOffer:async()=>{}},'../lib/supplierInventory':{...inventory,supplierInventorySchema:()=>async()=>{}},'../lib/supplierImages':{photoStore:()=>({ready:async()=>{}})},'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
+  const portalRoutes = load('routes/supplierPortal.js',{...common,'../lib/brandCatalog':{...require('../lib/brandCatalog'),brandCatalogSchema:()=>async()=>{},assertActiveNames:async(_db,names)=>names},'../lib/marketplace':{...require('../lib/marketplace'),marketplaceSchema:()=>async()=>{},publishOffer:async()=>{}},'../lib/supplierInventory':{...inventory,supplierInventorySchema:()=>async()=>{}},'../lib/supplierImages':{photoStore:()=>({ready:async()=>{}})},'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
   const app = express();app.use(express.json());app.use('/api/suppliers',supplierRoutes);app.use('/api/supplier-portal',portalRoutes);
   const server = await new Promise(resolve => {const s=app.listen(0,'127.0.0.1',()=>resolve(s));});
   const base = 'http://127.0.0.1:' + server.address().port;

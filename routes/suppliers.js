@@ -1,3 +1,4 @@
+const { brandCatalogSchema,brandsByIds } = require('../lib/brandCatalog');
 const { sellerCodeSchema, assignApprovedSellerCodes } = require('../lib/sellerCodes');
 const router = require('express').Router();
 const db     = require('../config/database');
@@ -19,7 +20,8 @@ router.post('/', async (req, res) => {
     if (!company || !name || !mobile || !city)
       return res.status(400).json({ message: 'اطلاعات ناقص است' });
 
-    const registered = await registerSupplier(db, req.body);
+    const managed=Object.hasOwn(req.body,'brand_ids');if(managed)await brandCatalogSchema(db)();
+    const registered = await registerSupplier(db, req.body, managed?{resolveBrands:async conn=>(await brandsByIds(conn,req.body.brand_ids,true)).map(brand=>brand.name).join('، ')}:{});
     const trackId = registered.id;
 
     // Only send registration SMS for public form submissions (not admin manual add)

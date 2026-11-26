@@ -46,6 +46,7 @@ function fixture() {
       if (sql.startsWith('SELECT id,role,status FROM users')) return [[{ id:params[0], role:params[0] === 1 ? 'admin' : 'user', status:'active' }]];
       if (sql.startsWith('SELECT id,company,name,mobile,status,portal_enabled FROM suppliers')) return [[{ id:params[0], company:'Test', status:'approved', portal_enabled:1 }]];
       if (sql.startsWith('SELECT id FROM suppliers')) return [[{ id:params[0] }]];
+      if(sql.startsWith('SELECT id,name,logo_id FROM brand_catalog'))return [[{id:1,name:'GISP',logo_id:null}]];
       if (sql.startsWith('SELECT scope_value FROM supplier_product_scopes')) return [[{ scope_value:'GISP' }]];
       if (sql.startsWith('SELECT p.id,COALESCE(inv.manufacturer_code')) {
         const rows = state.products.filter(p => p.status === 'active').map(p => ({ ...p,
@@ -102,7 +103,7 @@ function fixture() {
   const db = { execute:conn.execute, query:conn.query, getConnection:async () => conn };
   const auth = loadModule('../middleware/auth', { '../config/database':db });
   const portal = loadModule('../routes/supplierPortal', {
-    '../config/database':db, '../middleware/auth':auth, '../lib/marketplace':{...require('../lib/marketplace'),marketplaceSchema:()=>async()=>{},publishOffer:async()=>{}},'../config/sms':{},
+    '../config/database':db, '../middleware/auth':auth, '../lib/brandCatalog':{...require('../lib/brandCatalog'),brandCatalogSchema:()=>async()=>{},assertActiveNames:async(_db,names)=>names},'../lib/marketplace':{...require('../lib/marketplace'),marketplaceSchema:()=>async()=>{},publishOffer:async()=>{}},'../config/sms':{},
     '../config/notif':{ createNotif:async () => {} },
     '../lib/adminNotifications':{ resolveAdminNotification:async () => {}, notifyAdminNotificationsChanged() {} }
   });

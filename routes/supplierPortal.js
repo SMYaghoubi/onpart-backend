@@ -1,3 +1,4 @@
+const { brandCatalogSchema,assertActiveNames } = require('../lib/brandCatalog');
 const { sellerCodeSchema, ensureSellerCode } = require('../lib/sellerCodes');
 const router = require('express').Router();
 const jwt = require('jsonwebtoken');
@@ -18,7 +19,7 @@ const photos = photoStore(db);
 const MAX_ROWS = 2000;
 const ensureInventorySchema = supplierInventorySchema(db);
 async function inventoryReady(_req, res, next) {
-  try { await ensureInventorySchema(); await photos.ready(); await market.marketplaceSchema(db)(); next(); }
+  try { await ensureInventorySchema(); await photos.ready(); await market.marketplaceSchema(db)(); await brandCatalogSchema(db)(); next(); }
   catch (error) { console.error('Supplier inventory schema:', error.message); res.status(503).json({ message:'موجودی تأمین‌کنندگان موقتاً در دسترس نیست' }); }
 }
 const cleanPhone = normalizeSupplierPhone;
@@ -94,7 +95,9 @@ router.get('/products', supplierAuth, inventoryReady, async (req, res) => {
        WHERE b.supplier_id=? AND b.status='pending' ORDER BY n.id DESC`,
       [req.supplier.id]
     );
-    res.json({ products: rows, pending_products: pendingProducts, brands: scopes.map(row => row.scope_value.trim()) });
+    const [catalogBrands]=await db.execute('SELECT id,name,logo_id FROM brand_catalog WHERE active=1');
+    const activeKeys=new Set(catalogBrands.map(brand=>brandKey(brand.name)));
+    res.json({ products: rows, pending_products: pendingProducts, brand_details:catalogBrands.filter(row=>scopes.some(scope=>brandKey(scope.scope_value)===brandKey(row.name))).map(row=>({name:row.name,logo_url:row.logo_id?'/api/brands/'+row.id+'/logo?v='+row.logo_id:null})), brands: scopes.map(row => row.scope_value.trim()).filter(name=>activeKeys.has(brandKey(name))) });
   } catch (err) {
     res.status(500).json({ message: 'خطا در دریافت محصولات مجاز' });
   }
@@ -195,6 +198,7 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
         if (!code) throw new Error('کد محصول نامعتبر است');
         if (Object.prototype.hasOwnProperty.call(raw,'stock')) throw new Error('برای تعداد موجودی از فیلد quantity استفاده کنید');
         if (raw.new_product === true && raw.product_id == null) {
+          await assertActiveNames(conn,[raw.brand]);
           const newProduct = normalizeNewProduct(raw, brands);
           const identity = code + '\n' + brandKey(newProduct.brand);
           if (seenNew.has(identity)) throw new Error('کد و برند کالا در این لیست تکراری است');
@@ -296,17 +300,9 @@ router.post('/updates', supplierAuth, inventoryReady, async (req, res) => {
 });
 
 // Admin/marketer: list available scope values.
-router.get('/admin/scope-options', adminAuth, async (req, res) => {
-  try {
-    const [brands] = await db.execute(
-      `SELECT TRIM(brand) brand, COUNT(*) product_count
-       FROM products
-       WHERE status='active' AND brand IS NOT NULL AND TRIM(brand)<>''
-       GROUP BY TRIM(brand)
-       ORDER BY TRIM(brand)`
-    );
-    res.json({ brands:mapSupplierBrands(brands) });
-  } catch (err) { res.status(500).json({ message:'خطای سرور' }); }
+router.get('/admin/scope-options', adminAuth, async (_req,res)=>{
+  try { await brandCatalogSchema(db)(); const [rows]=await db.execute("SELECT b.name brand,(SELECT COUNT(*) FROM products p WHERE p.status='active' AND TRIM(p.brand)=b.name) product_count FROM brand_catalog b WHERE b.active=1 ORDER BY b.featured DESC,b.name");res.json({brands:rows}); }
+  catch(error){res.status(503).json({message:'دریافت فهرست برندهای مدیریت انجام نشد'});}
 });
 
 router.get('/admin/suppliers/:id/scopes', adminAuth, async (req, res) => {
@@ -322,19 +318,14 @@ router.put('/admin/suppliers/:id/scopes', adminAuth, async (req, res) => {
     if (!validId(req.params.id)) return res.status(400).json({ message:'شناسه نامعتبر است' });
     let brands = [...new Set((Array.isArray(req.body.brands)?req.body.brands:[]).map(normalizeBrand).filter(Boolean))].slice(0,200);
     const assignedCompany = req.body.assigned_company === true;
-    if (brands.length) {
-      const placeholders = brands.map(() => '?').join(',');
-      const [existingBrands] = await conn.execute(
-        `SELECT DISTINCT TRIM(brand) brand FROM products
-         WHERE status='active' AND TRIM(brand) IN (${placeholders})`,
-        brands
-      );
-      const available = new Map(mapSupplierBrands(existingBrands).map(row => [brandKey(row.brand),row.brand]));
-      const invalid = brands.filter(brand => !available.has(brandKey(brand)));
-      if (invalid.length) return res.status(400).json({ message:`برند نامعتبر است: ${invalid.join('، ')}` });
-      brands = [...new Set(brands.map(brand => available.get(brandKey(brand))))];
-    }
+    await brandCatalogSchema(db)();
     await conn.beginTransaction();
+    const [[supplier]]=await conn.execute('SELECT id FROM suppliers WHERE id=? FOR UPDATE',[req.params.id]);
+    if(!supplier)throw Object.assign(new Error('حساب فروشنده یافت نشد'),{status:404});
+    const [previous]=await conn.execute('SELECT scope_value FROM supplier_product_scopes WHERE supplier_id=? AND scope_type="brand"',[req.params.id]);
+    const existing=new Set(previous.map(row=>row.scope_value));
+    const additions=brands.filter(name=>!existing.has(name));
+    if(additions.length)await assertActiveNames(conn,additions);
     await conn.execute('DELETE FROM supplier_product_scopes WHERE supplier_id=?', [req.params.id]);
     if (assignedCompany) await conn.execute(
       'INSERT INTO supplier_product_scopes (supplier_id,scope_type,scope_value,created_by) VALUES (?,"assigned_company","",?)',
@@ -349,7 +340,7 @@ router.put('/admin/suppliers/:id/scopes', adminAuth, async (req, res) => {
     res.json({ message:'دسترسی پنل تأمین‌کننده ذخیره شد' });
   } catch (err) {
     try { await conn.rollback(); } catch (_) {}
-    res.status(500).json({ message:'خطا در ذخیره دسترسی‌ها' });
+    res.status(err.status||500).json({ message:err.status?err.message:'خطا در ذخیره دسترسی‌ها' });
   } finally { conn.release(); }
 });
 
@@ -500,6 +491,7 @@ router.post('/admin/updates/:id/approve', adminAuth, inventoryReady, async (req,
       await conn.execute('UPDATE supplier_update_items SET final_price=?,status="approved" WHERE id=?',[priceChanged?finalPrice:(item.supplier_final_price??null),item.id]);
     }
     for (const item of newItems) {
+      await assertActiveNames(conn,[item.brand]);
       if (!isProductInAllowedBrands(item, allowedBrands)) throw new Error('برند «' + item.brand + '» دیگر مجاز نیست');
       const id = await resolveNewProduct(conn,item);
       if (appliedProductIds.has(Number(id))) throw new Error('کالای «' + item.code + '» در همین بسته تکراری است');
