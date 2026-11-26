@@ -25,6 +25,8 @@ function stub(name, value) {
   const file = require.resolve(name);
   require.cache[file] = { id:file, filename:file, loaded:true, exports:value };
 }
+const snapshots = require('../lib/orderItemSnapshots');
+stub('../lib/orderItemSnapshots',{...snapshots,orderItemSnapshotSchema:()=>async()=>{}});
 stub('../config/database', { getConnection:async () => conn, execute:async () => [[]] });
 stub('../config/sms', {});
 stub('../config/notif', { createNotif:async () => {} });
