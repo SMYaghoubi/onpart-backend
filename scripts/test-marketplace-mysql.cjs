@@ -18,7 +18,7 @@ const run=(cmd,args,options={})=>new Promise((resolve,reject)=>{const p=spawn(cm
    catch(error){if(server.exitCode!=null)throw Error('Disposable MySQL startup failed');await new Promise(resolve=>setTimeout(resolve,500));}
   }
   if(!ready)throw Error('Disposable MySQL did not become ready');
-  await run(process.execPath,['--test','test/marketplace.mysql.test.js','test/supplierOrders.mysql.test.js'],{cwd:path.join(__dirname,'..'),env:{...env,ONPART_MARKET_TEST_MYSQL:'1',ONPART_ORDERS_TEST_MYSQL:'1'}});
+  await run(process.execPath,['--test','test/marketplace.mysql.test.js','test/supplierOrders.mysql.test.js','test/brandCatalog.mysql.test.js'],{cwd:path.join(__dirname,'..'),env:{...env,ONPART_MARKET_TEST_MYSQL:'1',ONPART_ORDERS_TEST_MYSQL:'1',ONPART_BRAND_TEST_MYSQL:'1'}});
  }finally{
   if(server){server.kill('SIGTERM');await new Promise(resolve=>server.exitCode!=null?resolve():server.once('exit',resolve));}
   await fs.rm(directory,{recursive:true,force:true});
