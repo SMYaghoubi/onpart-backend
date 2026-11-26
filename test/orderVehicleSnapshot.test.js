@@ -11,9 +11,12 @@ test('order item APIs prefer the vehicle snapshot and fall back to the current p
   assert.ok(matches.length >= 3, 'customer, detail and invoice queries must expose the same car field');
 });
 
-test('new and edited order items persist the vehicle snapshot', () => {
-  assert.match(routeSource, /order_items \(order_id,product_id,car_name,quantity,price,cost_price,total\)/);
-  assert.match(routeSource, /order_items \(order_id,product_id,car_name,quantity,price,cost_price,discount,total\)/);
+test('new and edited order items retain the vehicle in their immutable item snapshot', () => {
+  const {itemSnapshot}=require('../lib/orderItemSnapshots');
+  assert.equal(itemSnapshot({car:'قدیمی',cost_price:10}).car,'قدیمی');
+  assert.equal(itemSnapshot({car:'جدید',cost_price:20},{car_name:'قدیمی',cost_price:10}).car,'قدیمی');
+  assert.match(routeSource,/insertOrderItem\(conn,orderId/);
+  assert.match(routeSource,/itemSnapshot\(costRow,previousByProduct/);
 });
 
 test('migration 016 is idempotent and backfills existing items', () => {

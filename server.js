@@ -111,6 +111,7 @@ app.use('/uploads', (req,res,next) => {
 app.use('/api/auth',     require('./routes/auth'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api/supplier-portal', require('./routes/supplierImages'));
+app.use('/api/supplier-portal', require('./routes/supplierOrders'));
 app.use('/api/orders',   require('./routes/orders'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/payments', require('./routes/payments'));
@@ -159,4 +160,5 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
+
 

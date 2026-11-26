@@ -13,6 +13,8 @@ const {
 const { syncUserDebt } = require('../lib/orderDebt');
 const { resolveAdminNotification, notifyAdminNotificationsChanged } = require('../lib/adminNotifications');
 const { VALID_STATUSES, validateOrderTransition } = require('../lib/orderWorkflow');
+const { orderItemSnapshotSchema, itemSnapshot, insertOrderItem } = require('../lib/orderItemSnapshots');
+const ensureOrderSnapshots = orderItemSnapshotSchema(db);
 
 function orderReadAuth(req, res, next) {
   return req.query.admin === '1' ? adminAuth(req, res, next) : auth(req, res, next);
@@ -153,56 +155,60 @@ router.get('/:id', orderReadAuth, async (req, res) => {
 
 // ── POST /api/orders/manual ── (admin - manual order)
 router.post('/manual', adminAuth, async (req, res) => {
+  try { await ensureOrderSnapshots(); }
+  catch(error) { return res.status(503).json({message:'ثبت سفارش موقتاً در دسترس نیست؛ دوباره تلاش کنید.'}); }
+  const conn=await db.getConnection();
+  let committed=false;
   try {
-    const { user_name, user_phone, user_city, address, items, total, status, note, user_id } = req.body;
-
-    // Find or create user
-    let finalUserId = user_id;
-    if (!finalUserId && user_phone) {
-      const [existing] = await db.execute('SELECT id FROM users WHERE phone=?', [user_phone]);
-      if (existing.length) {
-        finalUserId = existing[0].id;
-        await db.execute('UPDATE users SET name=?, city=?, address=? WHERE id=?', [user_name, user_city, address, finalUserId]);
-      } else {
-        const [result] = await db.execute(
-          'INSERT INTO users (name, phone, city, address, role, status) VALUES (?,?,?,?,?,?)',
-          [user_name, user_phone, user_city, address, 'user', 'active']
-        );
-        finalUserId = result.insertId;
-      }
+    const { user_name,user_phone,user_city,address,note,user_id }=req.body;
+    const normalized=normalizeCartItems((req.body.items||[]).map(item=>({product_id:item.product_id,quantity:item.quantity??item.qty})));
+    if(!normalized.valid||!normalized.items.length)return res.status(400).json({message:'برای هر ردیف، یک کالا از فهرست محصولات انتخاب و تعداد معتبر وارد کنید.'});
+    const discount=Number(req.body.overall_discount||0);
+    if(!Number.isFinite(discount)||discount<0||discount>100)return res.status(400).json({message:'درصد تخفیف نامعتبر است.'});
+    const status=req.body.status||'pending_expert';
+    if(!VALID_STATUSES.includes(status))return res.status(400).json({message:'وضعیت سفارش نامعتبر است.'});
+    await conn.beginTransaction();
+    const lines=[];let subtotal=0;
+    for(const item of normalized.items){
+      const raw=req.body.items.find(row=>Number(row.product_id)===item.product_id);
+      const price=Number(raw.price),itemDiscount=Number(raw.discount||0);
+      if(!Number.isSafeInteger(price)||price<0||!Number.isFinite(itemDiscount)||itemDiscount<0||itemDiscount>100)throw new Error('قیمت یا تخفیف ردیف نامعتبر است');
+      const [[product]]=await conn.execute(`SELECT p.*,${supplierPurchasePriceSql} supplier_cost_price,COALESCE(${supplierPurchasePriceSql},?) cost_price FROM products p WHERE p.id=?`,[price,item.product_id]);
+      if(!product)throw new Error('محصول یافت نشد');
+      const total=Math.round(item.quantity*price*(1-itemDiscount/100));subtotal+=total;
+      if(!Number.isSafeInteger(total)||!Number.isSafeInteger(subtotal))throw new Error('مبلغ سفارش نامعتبر است');
+      lines.push({product,quantity:item.quantity,price,discount:itemDiscount,total});
     }
-
-    if (!finalUserId) {
-      // Create anonymous user
-      const [result] = await db.execute(
-        'INSERT INTO users (name, phone, role, status) VALUES (?,?,?,?)',
-        [user_name || 'مشتری', user_phone || '0000000000', 'user', 'active']
-      );
-      finalUserId = result.insertId;
+    let finalUserId=user_id;
+    if(!finalUserId&&user_phone){
+      const [existing]=await conn.execute('SELECT id FROM users WHERE phone=?',[user_phone]);
+      if(existing.length){finalUserId=existing[0].id;await conn.execute('UPDATE users SET name=?, city=?, address=? WHERE id=?',[user_name,user_city,address,finalUserId]);}
+      else{const [created]=await conn.execute('INSERT INTO users (name,phone,city,address,role,status) VALUES (?,?,?,?,?,?)',[user_name,user_phone,user_city,address,'user','active']);finalUserId=created.insertId;}
     }
-
-    const [orderResult] = await db.execute(
-      'INSERT INTO orders (user_id, total, status, note) VALUES (?,?,?,?)',
-      [finalUserId, total || 0, status || 'pending_expert', note || '']
-    );
-    const orderId = orderResult.insertId;
-
-    const [[manualUser]] = await db.execute('SELECT name,phone FROM users WHERE id=?', [finalUserId]);
-    if (manualUser) {
-      try { await SMS.orderConfirmed(manualUser.phone, manualUser.name || 'کاربر', orderId); }
-      catch (smsError) { console.error('Manual order SMS failed:', smsError.message); }
-    }
-    await createUserNotification(finalUserId, 'سفارش جدید برای شما ثبت شد', `سفارش ${orderId} در پنل ثبت شد.`, 'info', '/orders', 'order_submitted', 'order', orderId);
-
-    res.status(201).json({ id: orderId, message: 'سفارش ثبت شد', user_id: finalUserId });
-  } catch (err) {
-    console.error('Manual order error:', err.message);
-    res.status(500).json({ message: 'خطای سرور', error: err.message });
-  }
+    if(!finalUserId){const [created]=await conn.execute('INSERT INTO users (name,phone,role,status) VALUES (?,?,?,?)',[user_name||'مشتری',user_phone||'0000000000','user','active']);finalUserId=created.insertId;}
+    const total=Math.round(subtotal*(1-discount/100));
+    const [created]=await conn.execute('INSERT INTO orders (user_id,total,status,note,discount_percent) VALUES (?,?,?,?,?)',[finalUserId,total,status,note||'',discount]);
+    const orderId=created.insertId;
+    for(const line of lines)await insertOrderItem(conn,orderId,line.product.id,line.quantity,line.price,line.discount,line.total,itemSnapshot(line.product));
+    await conn.commit();committed=true;
+    try{
+      const [[user]]=await db.execute('SELECT name,phone FROM users WHERE id=?',[finalUserId]);
+      if(user)await SMS.orderConfirmed(user.phone,user.name||'کاربر',orderId);
+    }catch(error){console.error('Manual order SMS failed:',error.message);}
+    try{await createUserNotification(finalUserId,'سفارش جدید برای شما ثبت شد',`سفارش ${orderId} در پنل ثبت شد.`,'info','/orders','order_submitted','order',orderId);}
+    catch(error){console.error('Manual order notification failed:',error.message);}
+    res.status(201).json({id:orderId,total,message:'سفارش ثبت شد',user_id:finalUserId});
+  }catch(error){
+    if(!committed)await conn.rollback();
+    console.error('Manual order error:',error.message);
+    res.status(400).json({message:error.message||'ثبت سفارش انجام نشد'});
+  }finally{conn.release();}
 });
 
 // ── POST /api/orders ──
 router.post('/', auth, async (req, res) => {
+  try { await ensureOrderSnapshots(); }
+  catch(error) { return res.status(503).json({message:'ثبت سفارش موقتاً در دسترس نیست؛ دوباره تلاش کنید.'}); }
   const conn = await db.getConnection();
   let committed = false;
   try {
@@ -218,13 +224,15 @@ router.post('/', auth, async (req, res) => {
 
     for (const item of items) {
       const [[product]] = await conn.execute(
-        `SELECT p.*,COALESCE(${supplierPurchasePriceSql},p.price) cost_price
+        `SELECT p.*,${supplierPurchasePriceSql} supplier_cost_price,COALESCE(${supplierPurchasePriceSql},p.price) cost_price
          FROM products p WHERE p.id=? AND p.status="active" AND p.stock>0`,
         [item.product_id]
       );
       if (!product) throw new Error(`محصول ${item.product_id} موجود نیست`);
       const itemTotal = product.price * item.quantity;
+      if (!Number.isSafeInteger(itemTotal) || !Number.isSafeInteger(Number(product.cost_price)*item.quantity)) throw new Error('مبلغ ردیف سفارش نامعتبر است');
       total += itemTotal;
+      if (!Number.isSafeInteger(total)) throw new Error('مبلغ سفارش نامعتبر است');
       orderItems.push({ product, quantity: item.quantity, price: product.price, costPrice:product.cost_price, total: itemTotal });
     }
 
@@ -235,10 +243,7 @@ router.post('/', auth, async (req, res) => {
     const orderId = result.insertId;
 
     for (const item of orderItems) {
-      await conn.execute(
-        'INSERT INTO order_items (order_id,product_id,car_name,quantity,price,cost_price,total) VALUES (?,?,?,?,?,?,?)',
-        [orderId,item.product.id,item.product.car||null,item.quantity,item.price,item.costPrice,item.total]
-      );
+      await insertOrderItem(conn,orderId,item.product.id,item.quantity,item.price,0,item.total,itemSnapshot(item.product));
     }
 
     await conn.commit();
@@ -466,11 +471,18 @@ router.delete('/:id', adminAuth, async (req, res) => {
 
 // ── PUT /api/orders/:id/items ── (admin) - replace order items, recalc total
 router.put('/:id/items', adminAuth, async (req, res) => {
+  try { await ensureOrderSnapshots(); }
+  catch(error) { return res.status(503).json({message:'ویرایش سفارش موقتاً در دسترس نیست؛ دوباره تلاش کنید.'}); }
   const conn = await db.getConnection();
   try {
     const { items, overall_discount } = req.body; // [{product_id, quantity, price, discount}]
     if (!Array.isArray(items) || !items.length)
       return res.status(400).json({ message: 'حداقل یک قلم الزامی است' });
+    const normalized=normalizeCartItems(items);
+    if (!normalized.valid || normalized.items.length!==items.length || items.some(item=>!Number.isSafeInteger(Number(item.price)) || Number(item.price)<0 || !Number.isFinite(Number(item.discount||0)) || Number(item.discount||0)<0 || Number(item.discount||0)>100))
+      return res.status(400).json({message:'قیمت، تعداد یا تخفیف ردیف نامعتبر است'});
+    if (!Number.isFinite(Number(overall_discount||0)) || Number(overall_discount||0)<0 || Number(overall_discount||0)>100)
+      return res.status(400).json({message:'درصد تخفیف نامعتبر است'});
 
     await conn.beginTransaction();
     const [[order]] = await conn.execute(
@@ -487,6 +499,8 @@ router.put('/:id/items', adminAuth, async (req, res) => {
       return res.status(409).json({ message: 'اقلام فاکتور پس از تأیید مشتری قابل ویرایش نیستند' });
     }
 
+    const [previousItems] = await conn.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY id', [req.params.id]);
+    const previousByProduct = new Map(previousItems.map(item=>[Number(item.product_id),item]));
     await conn.execute('DELETE FROM order_items WHERE order_id=?', [req.params.id]);
 
     let subtotal = 0;
@@ -494,11 +508,11 @@ router.put('/:id/items', adminAuth, async (req, res) => {
       const itemDiscount = Number(item.discount) || 0;
       const lineTotal = Math.round(item.quantity * item.price * (1 - itemDiscount / 100));
       subtotal += lineTotal;
-      const [[costRow]]=await conn.execute(`SELECT p.car,COALESCE(${supplierPurchasePriceSql},?) cost_price FROM products p WHERE p.id=?`,[item.price,item.product_id]);
-      await conn.execute(
-        'INSERT INTO order_items (order_id,product_id,car_name,quantity,price,cost_price,discount,total) VALUES (?,?,?,?,?,?,?,?)',
-        [req.params.id,item.product_id,costRow.car||null,item.quantity,item.price,costRow.cost_price,itemDiscount,lineTotal]
-      );
+      if (!Number.isSafeInteger(subtotal)) throw new Error('مبلغ سفارش نامعتبر است');
+      const [[costRow]]=await conn.execute(`SELECT p.*,${supplierPurchasePriceSql} supplier_cost_price,COALESCE(${supplierPurchasePriceSql},?) cost_price FROM products p WHERE p.id=?`,[item.price,item.product_id]);
+      if (!costRow) throw new Error('محصول یافت نشد');
+      await insertOrderItem(conn,req.params.id,item.product_id,item.quantity,item.price,itemDiscount,lineTotal,
+        itemSnapshot(costRow,previousByProduct.get(Number(item.product_id))));
     }
 
     const overallDiscount = Number(overall_discount) || 0;
@@ -578,3 +592,4 @@ router.patch('/:id/customer-reject', auth, async (req, res) => {
 });
 
 module.exports = router;
+
