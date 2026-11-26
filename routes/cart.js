@@ -6,15 +6,15 @@ const ensure=market.marketplaceSchema(db);
 async function ready(_req,res,next){try{await ensure();next();}catch(e){res.status(503).json({message:'سبد خرید موقتاً در دسترس نیست'})}}
 router.get('/',auth,ready,async(req,res)=>{
  try{
-  const [rows]=await db.execute(`SELECT c.product_id,c.quantity,c.offer_token,c.offer_version,c.quoted_price,p.description,p.code,p.car,p.brand,p.image,
+  const [rows]=await db.execute(`SELECT c.product_id,c.quantity,c.offer_token,c.offer_version,c.quoted_price,codes.seller_code,p.description,p.code,p.car,p.brand,p.image,
    i.final_price current_price,i.offer_version current_version,${market.availableSql} remaining,
    CASE WHEN p.status='active' AND ${market.eligibleSql} THEN 1 ELSE 0 END stock
    FROM cart_items c LEFT JOIN products p ON p.id=c.product_id
    LEFT JOIN supplier_inventory i ON i.offer_token=c.offer_token AND i.product_id=c.product_id
-   LEFT JOIN suppliers s ON s.id=i.supplier_id WHERE c.user_id=? ORDER BY c.id`,[req.user.id]);
+   LEFT JOIN suppliers s ON s.id=i.supplier_id LEFT JOIN supplier_seller_codes codes ON codes.supplier_id=s.id WHERE c.user_id=? ORDER BY c.id`,[req.user.id]);
   res.json(rows.map(r=>({product_id:r.product_id,quantity:r.quantity,description:r.description,code:r.code,car:r.car,brand:r.brand,image:r.image,
    price:r.quoted_price==null?null:Number(r.quoted_price),offer_token:r.offer_token,offer_version:r.offer_version==null?null:Number(r.offer_version),
-   offer_label:r.offer_token?market.label(r.offer_token):'پیشنهاد انتخاب نشده',stock:Number(r.stock)>0,
+   seller_code:r.seller_code,offer_label:r.offer_token?market.label(r.seller_code):'پیشنهاد انتخاب نشده',stock:Number(r.stock)>0,
    needs_selection:!r.offer_token,needs_review:!r.offer_token||!Number(r.stock)||Number(r.quoted_price)!==Number(r.current_price)||Number(r.offer_version)!==Number(r.current_version)||Number(r.quantity)>Number(r.remaining)})));
  }catch(e){res.status(503).json({message:'دریافت سبد خرید انجام نشد'})}
 });

@@ -33,3 +33,10 @@ Before a future release: prepare and approve the initial Shahriar offers, verify
 The integration tests exercise existing supplier submission and management approval, multiple offers, Shahriar/approval/scope filtering, buyer and seller privacy, chosen-supplier snapshots, stale quotes, concurrent stock safety, order/receipt idempotency, partial/full payment, partial hub receipt, post-only shipment, rollback and legacy order behavior.
 
 A browser render was not available in the implementation environment. DOM/interaction and responsive-rule tests do not replace final visual inspection; no screenshots are represented as verified browser output.
+
+
+## Persistent public seller codes
+
+Migration 025 adds a separate immutable allocation table. Each approved supplier receives one random unique code such as `OP-482731`, independent of its private account ID, mobile number, and per-product offer tokens. The same code appears on all that supplier's offers and its cart label. Approved accounts receive missing codes during marketplace initialization, management lookup or their own authenticated account read; new approvals allocate their code inside the approval transaction. Existing allocations are reused after reapproval or price/profile updates.
+
+Codes appear read-only in the supplier account, and management can view and search them in the existing suppliers screen. Hub receipt rows show both the management-only supplier name and its public code. Buyer responses expose the public code with the label “فروشنده تأییدشده”; private seller/contact fields remain excluded. Allocations survive account deletion so an old public code cannot identify a different seller later. Unique constraints and collision retries protect concurrent allocation. No code editing or public code-to-identity lookup endpoint is added.

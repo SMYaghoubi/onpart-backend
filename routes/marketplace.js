@@ -6,7 +6,7 @@ const valid=id=>Number.isSafeInteger(Number(id))&&Number(id)>0;
 router.get('/admin/orders/:id/receipts',adminAuth,ready,async(req,res)=>{
  if(!valid(req.params.id))return res.status(400).json({message:'شماره سفارش نامعتبر است'});
  try{const [[order]]=await db.execute('SELECT id,status,fulfillment_policy,hub_city FROM orders WHERE id=?',[req.params.id]);if(!order)return res.status(404).json({message:'سفارش یافت نشد'});
-  const [items]=await db.execute("SELECT oi.id,oi.snapshot_code code,oi.snapshot_name description,oi.quantity,s.company supplier_name,r.state,r.received_at FROM order_items oi LEFT JOIN suppliers s ON s.id=oi.supplier_id LEFT JOIN market_reservations r ON r.order_item_id=oi.id WHERE oi.order_id=? AND oi.offer_token IS NOT NULL ORDER BY oi.id",[order.id]);
+  const [items]=await db.execute("SELECT oi.id,oi.snapshot_code code,oi.snapshot_name description,oi.quantity,s.company supplier_name,codes.seller_code,r.state,r.received_at FROM order_items oi LEFT JOIN suppliers s ON s.id=oi.supplier_id LEFT JOIN supplier_seller_codes codes ON codes.supplier_id=s.id LEFT JOIN market_reservations r ON r.order_item_id=oi.id WHERE oi.order_id=? AND oi.offer_token IS NOT NULL ORDER BY oi.id",[order.id]);
   res.json({order,items});
  }catch(e){res.status(500).json({message:'دریافت اطلاعات تحویل انجام نشد'})}
 });

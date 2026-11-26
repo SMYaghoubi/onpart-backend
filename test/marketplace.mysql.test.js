@@ -23,7 +23,7 @@ test('shared catalog, reviewed anonymous offers, exact-supplier orders and Shahr
  const common={'../config/database':pool,'../middleware/auth':auth},noops={createUserNotification:async()=>{},broadcastUserDataChanged:()=>{},deleteUserNotificationsForEntity:async()=>{},broadcastUserNotificationsChanged:()=>{}};
  const orderRouter=load('routes/orders.js',{...common,'../config/sms':new Proxy({},{get:()=>async()=>{}}),'../config/notif':{createNotif:async()=>{}},'../lib/userNotifications':noops,'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
  const portal=load('routes/supplierPortal.js',{...common,'../config/sms':{},'../config/notif':{createNotif:async()=>{}},'../lib/userNotifications':noops,'../lib/adminNotifications':{resolveAdminNotification:async()=>{},notifyAdminNotificationsChanged:()=>{}}});
- const app=express();app.use(express.json());app.use('/api/orders',orderRouter);app.use('/api/products',load('routes/products.js',common));app.use('/api/cart',load('routes/cart.js',common));app.use('/api/supplier-portal',portal,load('routes/supplierOrders.js',common));app.use('/api/marketplace',load('routes/marketplace.js',common));
+ const app=express();app.use(express.json());app.use('/api/orders',orderRouter);app.use('/api/products',load('routes/products.js',common));app.use('/api/cart',load('routes/cart.js',common));app.use('/api/supplier-portal',portal,load('routes/supplierOrders.js',common));app.use('/api/marketplace',load('routes/marketplace.js',common));app.use('/api/suppliers',load('routes/suppliers.js',{...common,'../config/sms':{},'../config/notif':{createNotif:async()=>{}}}));
  server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});const url='http://127.0.0.1:'+server.address().port;
  const buyer=id=>jwt.sign({id,role:'user',context:'shop'},process.env.JWT_SECRET),manager=jwt.sign({id:9,role:'admin',context:'management'},process.env.JWT_SECRET),supplier=id=>jwt.sign({supplier_id:id,role:'supplier'},process.env.JWT_SECRET);
  async function request(p,{token=buyer(101),method='GET',body}={}){const res=await fetch(url+p,{method,headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});return {status:res.status,data:await res.json()};}
@@ -37,6 +37,16 @@ test('shared catalog, reviewed anonymous offers, exact-supplier orders and Shahr
  async function submit(id,items){return request('/api/supplier-portal/updates',{token:supplier(id),method:'POST',body:{items:items.map(item=>({...item,code:item.code||'MASTER-'+item.product_id})),request_key:randomUUID()}});}
  async function approve(id,items,percent=5){const batch=await submit(id,items);ok(batch,201);const result=await request('/api/supplier-portal/admin/updates/'+batch.data.id+'/approve',{token:manager,method:'POST',body:{markup_percent:percent}});ok(result);return batch.data.id;}
  await approve(1,[{product_id:10,supplier_price:100000,quantity:5,available:true},{product_id:11,supplier_price:200000,quantity:3,available:true}]);
+ // One stable seller code is shared by all offers of that account and its own profile.
+ const ownCode=await request('/api/supplier-portal/me',{token:supplier(1)});ok(ownCode);assert.match(ownCode.data.seller_code,/^OP-[1-9][0-9]{5}$/);
+ const firstProduct=(await request('/api/products/10/offers')).data.offers[0],secondProduct=(await request('/api/products/11/offers')).data.offers[0];
+ assert.equal(firstProduct.seller_code,ownCode.data.seller_code);assert.equal(secondProduct.seller_code,ownCode.data.seller_code);assert.notEqual(firstProduct.offer_token,secondProduct.offer_token);assert.equal(firstProduct.label,'فروشنده تأییدشده · کد '+ownCode.data.seller_code);
+ const {ensureSellerCode}=require('../lib/sellerCodes');
+ await pool.execute('INSERT INTO suppliers (id,company,name,mobile,city,status,portal_enabled) VALUES (6,"Code concurrency test","Test","09000000006","شهریار","approved",1)');
+ const generated=await Promise.all(Array.from({length:6},()=>ensureSellerCode(pool,6)));assert.equal(new Set(generated).size,1,'concurrent allocations produce one persistent seller code');
+ for(const denied of [null,buyer(101),supplier(4)])assert.ok([401,403].includes((await request('/api/supplier-portal/me',{token:denied})).status));
+ assert.equal((await request('/api/supplier-portal/me?supplier_id=2',{token:supplier(1)})).data.seller_code,ownCode.data.seller_code);
+ const nextSchema=await fs.readFile(path.join(__dirname,'../migrations/025_supplier_seller_codes.sql'),'utf8');await admin.query(nextSchema);await admin.query(nextSchema);assert.equal((await request('/api/supplier-portal/me',{token:supplier(1)})).data.seller_code,ownCode.data.seller_code);
  // A pending lower price cannot appear until approved.
  const pending=await submit(2,[{product_id:10,supplier_price:80000,quantity:6,available:true}]);ok(pending,201);
  let offers=(await request('/api/products/10/offers')).data.offers;assert.equal(offers.length,1);assert.equal(offers[0].price,105000);
@@ -49,11 +59,11 @@ test('shared catalog, reviewed anonymous offers, exact-supplier orders and Shahr
  const [[retainedPrice]]=await pool.query('SELECT final_price FROM supplier_inventory WHERE supplier_id=1 AND product_id=10');assert.equal(Number(retainedPrice.final_price),105000);
  list=await request('/api/products?search=MASTER-10&brand=TestBrand');ok(list);assert.equal(list.data.products.length,1);assert.equal(list.data.products[0].offer_count,2);assert.equal(list.data.products[0].price,84000);privateBuyer(list.data);
  let detail=await request('/api/products/10/offers');ok(detail);privateBuyer(detail.data);assert.deepEqual(detail.data.offers.map(o=>o.price),[84000,105000]);assert.equal(detail.data.shipping.hub_city,'شهریار');
- const chosen=detail.data.offers[0],other=detail.data.offers[1];
+ const chosen=detail.data.offers[0],other=detail.data.offers[1];assert.notEqual(chosen.seller_code,other.seller_code);
  const row=(o,q=1,id=10)=>({product_id:id,quantity:q,offer_token:o.offer_token,offer_version:o.offer_version,expected_price:o.price});
  ok(await request('/api/cart/item',{method:'PATCH',body:{product_id:10,quantity:1}}),409);
  ok(await request('/api/cart/item',{method:'PATCH',body:row(chosen,2)}));
- let cart=await request('/api/cart');ok(cart);privateBuyer(cart.data);assert.equal(cart.data[0].price,84000);assert.equal(cart.data[0].needs_review,false);
+ let cart=await request('/api/cart');ok(cart);privateBuyer(cart.data);assert.equal(cart.data[0].price,84000);assert.equal(cart.data[0].needs_review,false);assert.equal(cart.data[0].seller_code,chosen.seller_code);assert.equal(cart.data[0].offer_label,chosen.label);
  ok(await request('/api/cart/item',{method:'PATCH',body:row(other,1)}));cart=await request('/api/cart');assert.equal(cart.data.length,1);assert.equal(cart.data[0].price,105000); // explicit replacement, no duplicate SKU
  ok(await request('/api/cart/item',{method:'PATCH',body:row(chosen,2)}));
  const orderBody={items:[{...row(chosen,2),supplier_id:1,cost_price:1}],request_key:randomUUID()};
@@ -95,7 +105,7 @@ test('shared catalog, reviewed anonymous offers, exact-supplier orders and Shahr
  ok(await request('/api/orders/'+id+'/ship',{token:manager,method:'PATCH',body:{shipping_method:'tipax'}}),409);
  ok(await request('/api/orders/'+id+'/ship',{token:manager,method:'PATCH',body:{shipping_method:'post',shipping_tracking:'TEST-ONLY-123'}}));
  // Cancellation after hub receipt does not manufacture stock back at the supplier.
- const receipts=await request('/api/marketplace/admin/orders/'+id+'/receipts',{token:manager});ok(receipts);assert.equal(receipts.data.items[0].state,'consumed');assert.equal(receipts.data.items[0].supplier_name,'PRIVATE SELLER 2');
+ const receipts=await request('/api/marketplace/admin/orders/'+id+'/receipts',{token:manager});ok(receipts);assert.equal(receipts.data.items[0].state,'consumed');assert.equal(receipts.data.items[0].supplier_name,'PRIVATE SELLER 2');assert.equal(receipts.data.items[0].seller_code,chosen.seller_code);
  // A multi-item order cannot leave the hub after only one supplier delivery.
  const offer11=(await request('/api/products/11/offers')).data.offers[0];
  const mixed=await request('/api/orders',{method:'POST',body:{items:[row(other,1),row(offer11,2,11)],request_key:randomUUID()}});ok(mixed,201);
@@ -122,6 +132,7 @@ test('shared catalog, reviewed anonymous offers, exact-supplier orders and Shahr
  ok(await request('/api/orders',{token:buyer(102),method:'POST',body:{items:[{product_id:12,quantity:1}],request_key:randomUUID()}}),409);
  await pool.execute('UPDATE products SET description=? WHERE id=10',['نام جدید کاتالوگ']);
  const historic=await request('/api/orders/'+id);ok(historic);assert.equal(historic.data.items[0].description,'کالای مشترک آزمایشی');privateBuyer(historic.data);
+ const vendorList=await request('/api/suppliers',{token:manager});ok(vendorList);assert.equal(vendorList.data.find(v=>v.id===2).seller_code,chosen.seller_code);ok(await request('/api/suppliers'),403);
  const management=await request('/api/products/10?admin=1',{token:manager});ok(management);assert.equal(management.data.supplier_id,2);assert.equal(management.data.description,'نام جدید کاتالوگ');
  t.diagnostic('Real MySQL: explicit approval, anonymous competing prices, exact offer snapshots, quote invalidation, reservations, concurrent stock safety, idempotent order and receipt, own-seller privacy, post-only hub fulfillment passed.');
 });

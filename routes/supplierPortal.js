@@ -1,3 +1,4 @@
+const { sellerCodeSchema, ensureSellerCode } = require('../lib/sellerCodes');
 const router = require('express').Router();
 const jwt = require('jsonwebtoken');
 const market=require('../lib/marketplace');
@@ -64,7 +65,10 @@ router.post('/auth/verify-otp', async (req, res) => {
   }
 });
 
-router.get('/me', supplierAuth, (req, res) => res.json(req.supplier));
+router.get('/me', supplierAuth, async (req, res) => {
+  try { await sellerCodeSchema(db)(); const seller_code=await ensureSellerCode(db,req.supplier.id);res.json({...req.supplier,seller_code}); }
+  catch(error){res.status(503).json({message:'دریافت کد فروشندگی انجام نشد؛ دوباره تلاش کنید'});}
+});
 
 router.get('/products', supplierAuth, inventoryReady, async (req, res) => {
   try {
