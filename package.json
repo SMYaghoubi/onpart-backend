@@ -1,6 +1,6 @@
 {
   "name": "onpart-api",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "OnPart Backend API",
   "main": "server.js",
   "scripts": {
@@ -26,4 +26,3 @@
     "nodemon": "^3.0.1"
   }
 }
-
