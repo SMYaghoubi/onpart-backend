@@ -4,6 +4,7 @@ const { adminAuth } = require('../middleware/auth');
 const { createNotif } = require('../config/notif');
 const SMS    = require('../config/sms');
 const { registerSupplier } = require('../lib/supplierRegistration');
+const { approveSupplier } = require('../lib/supplierApproval');
 
 // ── POST /api/suppliers ── (public form OR admin manual add)
 router.post('/', async (req, res) => {
@@ -80,14 +81,14 @@ router.get('/', adminAuth, async (req, res) => {
 // ── PATCH /api/suppliers/:id/approve ── (admin)
 router.patch('/:id/approve', adminAuth, async (req, res) => {
   try {
-    const [[s]] = await db.execute('SELECT * FROM suppliers WHERE id=?', [req.params.id]);
-    if (!s) return res.status(404).json({ message: 'درخواست یافت نشد' });
-    const [[linkedUser]]=await db.execute('SELECT u.id FROM users u WHERE TRIM(u.phone)=TRIM(?) AND NOT EXISTS(SELECT 1 FROM suppliers linked WHERE linked.user_id=u.id AND linked.id<>?) LIMIT 1',[s.mobile,req.params.id]);
-    await db.execute('UPDATE suppliers SET status="approved",portal_enabled=1,user_id=COALESCE(user_id,?) WHERE id=?', [linkedUser?.id||null,req.params.id]);
-    await SMS.supplierApproved(s.mobile, s.name, req.params.id);
-    res.json({ message: 'درخواست تایید شد' });
+    const result = await approveSupplier(db, req.params.id, req.user.id, req.body?.expected_brands, req.body?.confirm_brands === true);
+    if (result.alreadyApproved) return res.json({ message:'این حساب قبلاً تأیید شده است؛ مجوزهای فعلی بدون تغییر باقی ماندند.' });
+    const s = result.supplier;
+    try { if (!result.brandsReapproved) await SMS.supplierApproved(s.mobile, s.name, req.params.id); }
+    catch (error) { console.error('Supplier approval SMS failed:', error.message); }
+    res.json({ message:'حساب و برندهای اعلام‌شده فروشنده تأیید و فعال شدند.', brands:result.brands });
   } catch (err) {
-    res.status(500).json({ message: 'خطای سرور' });
+    res.status(err.status || 500).json({ message:err.status ? err.message : 'خطا در تأیید حساب و برندها؛ تغییری ذخیره نشد.' });
   }
 });
 
